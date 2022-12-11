@@ -1,5 +1,6 @@
 #include <string.h>
 
+#ifdef USE_WOLFSSL
 // #include "user_settings.h"
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/hmac.h>
@@ -9,9 +10,15 @@
 #include <wolfssl/wolfcrypt/chacha20_poly1305.h>
 #include <wolfssl/wolfcrypt/srp.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+#else
+int hmac_sha512_kdf(const uint8_t *secret, size_t secret_len, const char *label, const uint8_t *seed, size_t seed_len, uint8_t *out, size_t outlen);
+typedef uint32_t SrpHash;
+typedef uint32_t word32;
+#endif
 
 #include "port.h"
 #include "debug.h"
+#include "crypto.h"
 
 
 // 3072-bit group N (per RFC5054, Appendix A)
@@ -55,6 +62,7 @@ const byte g[] = {0x05};
 
 
 int wc_SrpSetKeyH(Srp *srp, byte *secret, word32 size) {
+#ifdef USE_WOLFSSL
     SrpHash hash;
     int r = BAD_FUNC_ARG;
 
@@ -72,10 +80,14 @@ int wc_SrpSetKeyH(Srp *srp, byte *secret, word32 size) {
     memset(&hash, 0, sizeof(hash));
 
     return r;
+#else
+    return 0;
+#endif
 }
 
 
 Srp *crypto_srp_new() {
+#ifdef USE_WOLFSSL
     Srp *srp = malloc(sizeof(Srp));
 
     DEBUG("Initializing SRP");
@@ -87,16 +99,23 @@ Srp *crypto_srp_new() {
     srp->keyGenFunc_cb = wc_SrpSetKeyH;
 
     return srp;
+#else
+    return NULL;
+#endif
 }
 
 
 void crypto_srp_free(Srp *srp) {
+#ifdef USE_WOLFSSL
     wc_SrpTerm(srp);
     free(srp);
+#else
+#endif
 }
 
 
 int crypto_srp_init(Srp *srp, const char *username, const char *password) {
+#ifdef USE_WOLFSSL
     DEBUG("Generating salt");
     byte salt[16];
     homekit_random_fill(salt, sizeof(salt));
@@ -145,10 +164,14 @@ int crypto_srp_init(Srp *srp, const char *username, const char *password) {
     free(verifier);
 
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_srp_get_salt(Srp *srp, byte *buffer, size_t *buffer_size) {
+#ifdef USE_WOLFSSL
     if (buffer_size == NULL)
         return -1;
 
@@ -160,10 +183,14 @@ int crypto_srp_get_salt(Srp *srp, byte *buffer, size_t *buffer_size) {
     memcpy(buffer, srp->salt, srp->saltSz);
     *buffer_size = srp->saltSz;
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_srp_get_public_key(Srp *srp, byte *buffer, size_t *buffer_size) {
+#ifdef USE_WOLFSSL
     if (buffer_size == NULL)
         return -1;
 
@@ -178,6 +205,9 @@ int crypto_srp_get_public_key(Srp *srp, byte *buffer, size_t *buffer_size) {
     int r = wc_SrpGetPublic(srp, buffer, &len);
     *buffer_size = len;
     return r;
+#else
+    return 0;
+#endif
 }
 
 
@@ -186,6 +216,7 @@ int crypto_srp_compute_key(
     const byte *client_public_key, size_t client_public_key_size,
     const byte *server_public_key, size_t server_public_key_size
 ) {
+#ifdef USE_WOLFSSL
     int r = wc_SrpComputeKey(
         srp,
         (byte *)client_public_key, client_public_key_size,
@@ -197,10 +228,14 @@ int crypto_srp_compute_key(
     }
 
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_srp_verify(Srp *srp, const byte *proof, size_t proof_size) {
+#ifdef USE_WOLFSSL
     int r = wc_SrpVerifyPeersProof(srp, (byte *)proof, proof_size);
     if (r) {
         DEBUG("Failed to verify client SRP proof (code %d)", r);
@@ -208,10 +243,14 @@ int crypto_srp_verify(Srp *srp, const byte *proof, size_t proof_size) {
     }
 
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_srp_get_proof(Srp *srp, byte *proof, size_t *proof_size) {
+#ifdef USE_WOLFSSL
     if (proof_size == NULL)
         return -1;
 
@@ -225,6 +264,9 @@ int crypto_srp_get_proof(Srp *srp, byte *proof, size_t *proof_size) {
     *proof_size = proof_len;
 
     return r;
+#else
+    return 0;
+#endif
 }
 
 
@@ -244,6 +286,7 @@ int crypto_hkdf(
 
     *output_size = 32;
 
+#ifdef USE_WOLFSSL
     int r = wc_HKDF(
         SHA512,
         key, key_size,
@@ -252,6 +295,9 @@ int crypto_hkdf(
 
         output, *output_size
     );
+#else
+    int r = hmac_sha512_kdf(key, key_size, salt, info, info_size, output, 32);
+#endif
 
     return r;
 }
@@ -263,12 +309,16 @@ int crypto_srp_hkdf(
     const byte *info, size_t info_size,
     byte *output, size_t *output_size
 ) {
+#ifdef USE_WOLFSSL
     return crypto_hkdf(
         srp->key, srp->keySz,
         salt, salt_size,
         info, info_size,
         output, output_size
     );
+#else
+    return 0;
+#endif
 }
 
 
@@ -277,6 +327,7 @@ int crypto_chacha20poly1305_decrypt(
     const byte *message, size_t message_size,
     byte *decrypted, size_t *decrypted_size
 ) {
+#ifdef USE_WOLFSSL
     if (message_size <= CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE) { 
         DEBUG("Decrypted message is too small");
         return -2;
@@ -300,6 +351,9 @@ int crypto_chacha20poly1305_decrypt(
     );
 
     return r;
+#else
+    return 0;
+#endif
 }
 
 int crypto_chacha20poly1305_encrypt(
@@ -307,6 +361,7 @@ int crypto_chacha20poly1305_encrypt(
     const byte *message, size_t message_size,
     byte *encrypted, size_t *encrypted_size
 ) {
+#ifdef USE_WOLFSSL
     if (encrypted_size == NULL)
         return -1;
 
@@ -325,19 +380,27 @@ int crypto_chacha20poly1305_encrypt(
     );
 
     return r;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_ed25519_init(ed25519_key *key) {
+#ifdef USE_WOLFSSL
     int r = wc_ed25519_init(key);
     if (r) {
         return r;
     }
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 ed25519_key *crypto_ed25519_new() {
+#ifdef USE_WOLFSSL
     ed25519_key *key = malloc(sizeof(ed25519_key));
     int r = crypto_ed25519_init(key);
     if (r) {
@@ -345,15 +408,22 @@ ed25519_key *crypto_ed25519_new() {
         return NULL;
     }
     return key;
+#else
+    return 0;
+#endif
 }
 
 
 void crypto_ed25519_free(ed25519_key *key) {
+#ifdef USE_WOLFSSL
     if (key)
         free(key);
+#else
+#endif
 }
 
 int crypto_ed25519_generate(ed25519_key *key) {
+#ifdef USE_WOLFSSL
     int r;
     r = crypto_ed25519_init(key);
     if (r)
@@ -373,17 +443,25 @@ int crypto_ed25519_generate(ed25519_key *key) {
     }
 
     return 0;
+#else
+    return 0;
+#endif
 }
 
 int crypto_ed25519_import_key(ed25519_key *key, const byte *data, size_t size) {
+#ifdef USE_WOLFSSL
     return wc_ed25519_import_private_key(
         data, ED25519_KEY_SIZE,
         data + ED25519_KEY_SIZE, ED25519_PUB_KEY_SIZE,
         key
     );
+#else
+    return 0;
+#endif
 }
 
 int crypto_ed25519_export_key(const ed25519_key *key, byte *buffer, size_t *size) {
+#ifdef USE_WOLFSSL
     if (size == NULL)
         return -1;
 
@@ -396,13 +474,21 @@ int crypto_ed25519_export_key(const ed25519_key *key, byte *buffer, size_t *size
     int r = wc_ed25519_export_private((ed25519_key *)key, buffer, &key_size);
     *size = key_size;
     return r;
+#else
+    return 0;
+#endif
 }
 
 int crypto_ed25519_import_public_key(ed25519_key *key, const byte *data, size_t size) {
+#ifdef USE_WOLFSSL
     return wc_ed25519_import_public(data, size, key);
+#else
+    return 0;
+#endif
 }
 
 int crypto_ed25519_export_public_key(const ed25519_key *key, byte *buffer, size_t *size) {
+#ifdef USE_WOLFSSL
     if (size == NULL) {
         return -1;
     }
@@ -416,6 +502,9 @@ int crypto_ed25519_export_public_key(const ed25519_key *key, byte *buffer, size_
     int r = wc_ed25519_export_public((ed25519_key *)key, buffer, &len);
     *size = len;
     return r;
+#else
+    return 0;
+#endif
 }
 
 
@@ -424,6 +513,7 @@ int crypto_ed25519_sign(
     const byte *message, size_t message_size,
     byte *signature, size_t *signature_size
 ) {
+#ifdef USE_WOLFSSL
     if (signature_size == NULL) {
         return -1;
     }
@@ -442,6 +532,9 @@ int crypto_ed25519_sign(
     );
     *signature_size = len;
     return r;
+#else
+    return 0;
+#endif
 }
 
 
@@ -450,6 +543,7 @@ int crypto_ed25519_verify(
     const byte *message, size_t message_size,
     const byte *signature, size_t signature_size
 ) {
+#ifdef USE_WOLFSSL
     int verified;
     int r = wc_ed25519_verify_msg(
         signature, signature_size,
@@ -457,27 +551,38 @@ int crypto_ed25519_verify(
         &verified, (ed25519_key *)key
     );
     return !r && !verified;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_curve25519_init(curve25519_key *key) {
+#ifdef USE_WOLFSSL
     int r = wc_curve25519_init(key);
     if (r) {
         return r;
     }
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 void crypto_curve25519_done(curve25519_key *key) {
+#ifdef USE_WOLFSSL
     if (!key)
         return;
 
     wc_curve25519_free(key);
+#else
+#endif
 }
 
 
 int crypto_curve25519_generate(curve25519_key *key) {
+#ifdef USE_WOLFSSL
     int r;
     r = crypto_curve25519_init(key);
     if (r) {
@@ -498,15 +603,23 @@ int crypto_curve25519_generate(curve25519_key *key) {
     }
 
     return 0;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_curve25519_import_public(curve25519_key *key, const byte *data, size_t size) {
+#ifdef USE_WOLFSSL
     return wc_curve25519_import_public_ex(data, size, key, EC25519_LITTLE_ENDIAN);
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_curve25519_export_public(const curve25519_key *key, byte *buffer, size_t *size) {
+#ifdef USE_WOLFSSL
     if (*size == 0) {
         word32 len = 0;
         int r = wc_curve25519_export_public_ex(
@@ -526,10 +639,14 @@ int crypto_curve25519_export_public(const curve25519_key *key, byte *buffer, siz
     );
     *size = len;
     return r;
+#else
+    return 0;
+#endif
 }
 
 
 int crypto_curve25519_shared_secret(const curve25519_key *private_key, const curve25519_key *public_key, byte *buffer, size_t *size) {
+#ifdef USE_WOLFSSL
     if (*size < CURVE25519_KEYSIZE) {
         *size = CURVE25519_KEYSIZE;
         return -2;
@@ -543,5 +660,8 @@ int crypto_curve25519_shared_secret(const curve25519_key *private_key, const cur
     );
     *size = len;
     return r;
+#else
+    return 0;
+#endif
 }
 

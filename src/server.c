@@ -4,17 +4,30 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdbool.h>
-
-#include <lwip/sockets.h>
-
 #include <unistd.h>
 
-#if defined(ESP_IDF)
+#if defined(ESP_NONOS)
+#define __cplusplus
+#include <os_type.h>
+#undef __cplusplus
+#include <mem.h>
+#include <ip_addr.h>
+#include <espconn.h>
+typedef int SemaphoreHandle_t;
+#define xSemaphoreCreateBinary() 1
+#define xSemaphoreGive(...)
+#define xSemaphoreTake(...)
+#define vSemaphoreDelete(...)
+#define vTaskDelete(...)
+#define close(...)
+#elif defined(ESP_IDF)
+#include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #elif defined(ESP_OPEN_RTOS)
+#include <lwip/sockets.h>
 #include <FreeRTOS.h>
 #include <task.h>
 #include <queue.h>
@@ -24,9 +37,7 @@
 #endif
 
 #include <http-parser/http_parser.h>
-#include <cJSON.h>
-#include <wolfssl/wolfcrypt/hash.h>
-#include <wolfssl/wolfcrypt/coding.h>
+#include <cJSON/cJSON.h>
 
 #include "constants.h"
 #include "base64.h"
@@ -139,11 +150,14 @@ typedef struct {
 
     bool paired;
     pairing_context_t *pairing_context;
-
+#if defined(ESP_NONOS)
+    struct espconn *listen_conn;
+    struct espconn *accept_conn[7];
+#else
     int listen_fd;
     fd_set fds;
     int max_fd;
-
+#endif
     homekit_endpoint_t endpoint;
     struct {
         struct {
@@ -197,7 +211,13 @@ struct _client_context_t {
     homekit_server_t *server;
 
     uint8_t id;
+#if defined(ESP_NONOS)
+    struct espconn *conn;
+    char* recv;
+    int recv_len;
+#else
     int socket;
+#endif
 
     int pairing_id;
     byte permissions;
@@ -226,9 +246,13 @@ homekit_server_t *server_new() {
     if (!server) {
         return NULL;
     }
-
+#if defined(ESP_NONOS)
+    server->listen_conn = NULL;
+    memset(server->accept_conn, 0, sizeof(server->accept_conn));
+#else
     FD_ZERO(&server->fds);
     server->max_fd = 0;
+#endif
     server->client_count = 0;
     server->config = NULL;
     server->paired = false;
@@ -468,6 +492,13 @@ client_context_t *client_context_new() {
 
     c->server = NULL;
     c->id = 0;
+#if defined(ESP_NONOS)
+    c->conn = NULL;
+    c->recv = NULL;
+    c->recv_len = 0;
+#else
+    c->socket = -1;
+#endif
 
     c->pairing_id = -1;
     c->encrypted = false;
@@ -838,7 +869,10 @@ void write_characteristic_json(json_stream *json, client_context_t *client, cons
                                 json_string(json, "");
                                 break;
                             }
-
+#if defined(ESP_NONOS)
+                            size_t encoded_tlv_size = 0;
+                            byte *encoded_tlv_data = base64_encode(tlv_data, tlv_size, &encoded_tlv_size);
+#else
                             size_t encoded_tlv_size = base64_encoded_size(tlv_data, tlv_size);
                             byte *encoded_tlv_data = malloc(encoded_tlv_size + 1);
                             if (!encoded_tlv_data) {
@@ -849,7 +883,7 @@ void write_characteristic_json(json_stream *json, client_context_t *client, cons
                             }
                             base64_encode(tlv_data, tlv_size, encoded_tlv_data);
                             encoded_tlv_data[encoded_tlv_size] = 0;
-
+#endif
                             json_string(json, (char*) encoded_tlv_data);
 
                             free(encoded_tlv_data);
@@ -863,6 +897,10 @@ void write_characteristic_json(json_stream *json, client_context_t *client, cons
                     if (!v->data_value || v->data_size == 0) {
                         json_string(json, "");
                     } else {
+#if defined(ESP_NONOS)
+                        size_t encoded_data_size = 0;
+                        byte *encoded_data = base64_encode(v->data_value, v->data_size, &encoded_data_size);
+#else
                         size_t encoded_data_size = base64_encoded_size(v->data_value, v->data_size);
                         byte *encoded_data = malloc(encoded_data_size + 1);
                         if (!encoded_data) {
@@ -872,7 +910,7 @@ void write_characteristic_json(json_stream *json, client_context_t *client, cons
                         }
                         base64_encode(v->data_value, v->data_size, encoded_data);
                         encoded_data[encoded_data_size] = 0;
-
+#endif
                         json_string(json, (char*) encoded_data);
 
                         free(encoded_data);
@@ -932,12 +970,19 @@ int client_send_plainv(
                 part_offset = 0;
             }
         }
-
+#if defined(ESP_NONOS)
+        int r = espconn_sent(context->conn, buffer, chunk_size);
+        if (r < 0) {
+            CLIENT_ERROR(context, "Failed to write response (errno %d)", r);
+            return -1;
+        }
+#else
         int r = write(context->socket, buffer, chunk_size);
         if (r == -1) {
             CLIENT_ERROR(context, "Failed to write response (errno %d)", errno);
             return -1;
         }
+#endif
     }
 
     return 0;
@@ -999,12 +1044,19 @@ int client_send_encryptedv(
             CLIENT_ERROR(context, "Failed to chacha encrypt payload (code %d)", r);
             return -1;
         }
-
+#if defined(ESP_NONOS)
+        r = espconn_sent(context->conn, encrypted, available + 2);
+        if (r < 0) {
+            CLIENT_ERROR(context, "Failed to write response (errno %d)", r);
+            return -1;
+        }
+#else
         r = write(context->socket, encrypted, available + 2);
         if (r == -1) {
             CLIENT_ERROR(context, "Failed to write response (errno %d)", errno);
             return -1;
         }
+#endif
     }
 
     return 0;
@@ -1096,11 +1148,19 @@ void client_sendv(client_context_t *context, uint8_t n, const byte **data, size_
         client_send_encryptedv(context, n, data, data_sizes);
     } else {
         if (n == 1) {
+#if defined(ESP_NONOS)
+            int r = espconn_sent(context->conn, data[0], data_sizes[0]);
+            if (r < 0) {
+                CLIENT_ERROR(context, "Failed to send response (errno %d)", r);
+                return;
+            }
+#else
             int r = write(context->socket, data[0], data_sizes[0]);
             if (r < 0) {
                 CLIENT_ERROR(context, "Failed to send response (errno %d)", errno);
                 return;
             }
+#endif
         } else {
             client_send_plainv(context, n, data, data_sizes);
         }
@@ -2654,12 +2714,12 @@ void homekit_server_on_get_characteristics(client_context_t *context) {
     json_object_start(json);
     json_string(json, "characteristics"); json_array_start(json);
 
-    void write_characteristic_error(json_stream *json, int aid, int iid, int status) {
-        json_object_start(json);
-        json_string(json, "aid"); json_uint32(json, aid);
-        json_string(json, "iid"); json_uint32(json, iid);
-        json_string(json, "status"); json_uint8(json, status);
-        json_object_end(json);
+#define write_characteristic_error(json, aid, iid, status) { \
+        json_object_start(json); \
+        json_string(json, "aid"); json_uint32(json, aid); \
+        json_string(json, "iid"); json_uint32(json, iid); \
+        json_string(json, "status"); json_integer(json, status); \
+        json_object_end(json); \
     }
 
     id_index = 0;
@@ -2697,12 +2757,388 @@ void homekit_server_on_get_characteristics(client_context_t *context) {
         id_index++;
     }
 
+#undef write_characteristic_error
+
     json_array_end(json);
     json_object_end(json); // response
 
     json_flush(json);
 
     client_send_chunk(NULL, 0, context);
+}
+
+static HAPStatus process_characteristics_update(client_context_t *context, const cJSON *j_ch) {
+    cJSON *j_aid = cJSON_GetObjectItem(j_ch, "aid");
+    if (!j_aid) {
+        CLIENT_ERROR(context, "Failed to process request: no \"aid\" field");
+        return HAPStatus_NoResource;
+    }
+    if (j_aid->type != cJSON_Number) {
+        CLIENT_ERROR(context, "Failed to process request: \"aid\" field is not a number");
+        return HAPStatus_NoResource;
+    }
+
+    cJSON *j_iid = cJSON_GetObjectItem(j_ch, "iid");
+    if (!j_iid) {
+        CLIENT_ERROR(context, "Failed to process request: no \"iid\" field");
+        return HAPStatus_NoResource;
+    }
+    if (j_iid->type != cJSON_Number) {
+        CLIENT_ERROR(context, "Failed to process request: \"iid\" field is not a number");
+        return HAPStatus_NoResource;
+    }
+
+    int aid = j_aid->valueint;
+    int iid = j_iid->valueint;
+
+    homekit_characteristic_t *ch = homekit_characteristic_by_aid_and_iid(
+        context->server->config->accessories, aid, iid
+    );
+    if (!ch) {
+        CLIENT_ERROR(context, "Failed to process request to update %d.%d: "
+              "no such characteristic", aid, iid);
+        return HAPStatus_NoResource;
+    }
+
+    cJSON *j_value = cJSON_GetObjectItem(j_ch, "value");
+    if (j_value) {
+        homekit_value_t h_value = HOMEKIT_NULL();
+
+        if (!(ch->permissions & homekit_permissions_paired_write)) {
+            CLIENT_ERROR(context, "Failed to update %d.%d: no write permission", aid, iid);
+            return HAPStatus_ReadOnly;
+        }
+
+        switch (ch->format) {
+            case homekit_format_bool: {
+                bool value = false;
+                if (j_value->type == cJSON_True) {
+                    value = true;
+                } else if (j_value->type == cJSON_False) {
+                    value = false;
+                } else if (j_value->type == cJSON_Number &&
+                        (j_value->valueint == 0 || j_value->valueint == 1)) {
+                    value = j_value->valueint == 1;
+                } else {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not a boolean or 0/1", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with boolean %s", aid, iid, ch->description, value ? "true" : "false");
+
+                h_value = HOMEKIT_BOOL(value);
+
+                break;
+            }
+            case homekit_format_uint8:
+            case homekit_format_uint16:
+            case homekit_format_uint32:
+            case homekit_format_uint64:
+            case homekit_format_int: {
+                // We accept boolean values here in order to fix a bug in HomeKit. HomeKit sometimes sends a boolean instead of an integer of value 0 or 1.
+                if (j_value->type != cJSON_Number && j_value->type != cJSON_False && j_value->type != cJSON_True) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not a number", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                double min_value = 0;
+                double max_value = 0;
+
+                switch (ch->format) {
+                    case homekit_format_uint8: {
+                        min_value = 0;
+                        max_value = 255;
+                        break;
+                    }
+                    case homekit_format_uint16: {
+                        min_value = 0;
+                        max_value = 65535;
+                        break;
+                    }
+                    case homekit_format_uint32: {
+                        min_value = 0;
+                        max_value = 4294967295;
+                        break;
+                    }
+                    case homekit_format_uint64: {
+                        min_value = 0;
+                        max_value = 18446744073709551615ULL;
+                        break;
+                    }
+                    case homekit_format_int: {
+                        min_value = -2147483648;
+                        max_value = 2147483647;
+                        break;
+                    }
+                    default: {
+                        // Impossible, keeping to make compiler happy
+                        break;
+                    }
+                }
+
+                if (ch->min_value)
+                    min_value = *ch->min_value;
+                if (ch->max_value)
+                    max_value = *ch->max_value;
+
+                double value = j_value->valuedouble;
+                if (j_value->type == cJSON_True) {
+                    value = 1;
+                } else if (j_value->type == cJSON_False) {
+                    value = 0;
+                }
+
+                if (value < min_value || value > max_value) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value %g is not in range %g..%g",
+                                 aid, iid, value, min_value, max_value);
+                    return HAPStatus_InvalidValue;
+                }
+
+                if (ch->valid_values.count) {
+                    bool matches = false;
+                    int v = (int)value;
+                    for (int i=0; i<ch->valid_values.count; i++) {
+                        if (v == ch->valid_values.values[i]) {
+                            matches = true;
+                            break;
+                        }
+                    }
+
+                    if (!matches) {
+                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not one of valid values", aid, iid);
+                        return HAPStatus_InvalidValue;
+                    }
+                }
+
+                if (ch->valid_values_ranges.count) {
+                    bool matches = false;
+                    for (int i=0; i<ch->valid_values_ranges.count; i++) {
+                        if (value >= ch->valid_values_ranges.ranges[i].start &&
+                                value <= ch->valid_values_ranges.ranges[i].end) {
+                            matches = true;
+                            break;
+                        }
+                    }
+
+                    if (!matches) {
+                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not in valid values range", aid, iid);
+                        return HAPStatus_InvalidValue;
+                    }
+                }
+
+                CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with integer %g", aid, iid, ch->description, value);
+
+                switch (ch->format) {
+                    case homekit_format_uint8:
+                        h_value = HOMEKIT_UINT8(value);
+                        break;
+                    case homekit_format_uint16:
+                        h_value = HOMEKIT_UINT16(value);
+                        break;
+                    case homekit_format_uint32:
+                        h_value = HOMEKIT_UINT32(value);
+                        break;
+                    case homekit_format_uint64:
+                        h_value = HOMEKIT_UINT64(value);
+                        break;
+                    case homekit_format_int:
+                        h_value = HOMEKIT_INT(value);
+                        break;
+
+                    default:
+                        CLIENT_ERROR(context, "Unexpected format when updating numeric value: %d", ch->format);
+                        return HAPStatus_InvalidValue;
+                }
+
+                break;
+            }
+            case homekit_format_float: {
+                if (j_value->type != cJSON_Number) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not a number", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                float value = j_value->valuedouble;
+                if ((ch->min_value && value < *ch->min_value) ||
+                        (ch->max_value && value > *ch->max_value)) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not in range", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with %g", aid, iid, ch->description, value);
+
+                h_value = HOMEKIT_FLOAT(value);
+
+                break;
+            }
+            case homekit_format_string: {
+                if (j_value->type != cJSON_String) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not a string", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                int max_len = (ch->max_len) ? *ch->max_len : 64;
+
+                char *value = j_value->valuestring;
+                if (strlen(value) > max_len) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is too long", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with \"%s\"", aid, iid, ch->description, value);
+
+                h_value = HOMEKIT_STRING(value);
+
+                break;
+            }
+            case homekit_format_tlv: {
+                if (j_value->type != cJSON_String) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not a string", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                int max_len = (ch->max_len) ? *ch->max_len : 256;
+
+                char *value = j_value->valuestring;
+                size_t value_len = strlen(value);
+                if (value_len > max_len) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is too long", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+#if defined(ESP_NONOS)
+                size_t tlv_size = 0;
+                byte *tlv_data = base64_decode(value, value_len, &tlv_size);
+                if (!tlv_data) {
+                    CLIENT_ERROR(context,
+                                 "Failed to update %d.%d: "
+                                 "error allocating %d bytes for Base64 decoding",
+                                 aid, iid, tlv_size);
+                    return HAPStatus_InvalidValue;
+                }
+#else
+                size_t tlv_size = base64_decoded_size((unsigned char*)value, value_len);
+                byte *tlv_data = malloc(tlv_size);
+                if (!tlv_data) {
+                    CLIENT_ERROR(context,
+                                 "Failed to update %d.%d: "
+                                 "error allocating %d bytes for Base64 decoding",
+                                 aid, iid, tlv_size);
+                    return HAPStatus_InvalidValue;
+                }
+                if (base64_decode((byte*) value, value_len, tlv_data) < 0) {
+                    free(tlv_data);
+                    CLIENT_ERROR(context, "Failed to update %d.%d: error Base64 decoding", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+#endif
+                tlv_values_t *tlv_values = tlv_new();
+                if (!tlv_values) {
+                    free(tlv_data);
+                    CLIENT_ERROR(context, "Failed to update %d.%d: error allocating memory for TLV values", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+                int r = tlv_parse(tlv_data, tlv_size, tlv_values);
+                free(tlv_data);
+
+                if (r) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: error parsing TLV", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with TLV:", aid, iid, ch->description);
+                for (tlv_t *t=tlv_values->head; t; t=t->next) {
+                    char *escaped_payload = binary_to_string(t->value, t->size);
+                    CLIENT_DEBUG(context, "  Type %d value (%d bytes): %s", t->type, t->size, escaped_payload);
+                    free(escaped_payload);
+                }
+
+                h_value = HOMEKIT_TLV(tlv_values);
+
+                tlv_free(tlv_values);
+                break;
+            }
+            case homekit_format_data: {
+                if (j_value->type != cJSON_String) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is not a string", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+
+                // Default max data len = 2,097,152 but that does not make sense
+                // for this accessory
+                int max_len = (ch->max_data_len) ? *ch->max_data_len : 4096;
+
+                char *value = j_value->valuestring;
+                size_t value_len = strlen(value);
+                if (value_len > max_len) {
+                    CLIENT_ERROR(context, "Failed to update %d.%d: value is too long", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+#if defined(ESP_NONOS)
+                size_t data_size = 0;
+                byte *data = base64_decode((unsigned char*)value, value_len, &data_size);
+                if (!data) {
+                    CLIENT_ERROR(context,
+                                 "Failed to update %d.%d: "
+                                 "error allocating %d bytes for Base64 decoding",
+                                 aid, iid, data_size);
+                    return HAPStatus_InvalidValue;
+                }
+#else
+                size_t data_size = base64_decoded_size((unsigned char*)value, value_len);
+                byte *data = malloc(data_size);
+                if (!data) {
+                    CLIENT_ERROR(context,
+                                 "Failed to update %d.%d: "
+                                 "error allocating %d bytes for Base64 decoding",
+                                 aid, iid, data_size);
+                    return HAPStatus_InvalidValue;
+                }
+
+                if (base64_decode((byte*) value, value_len, data) < 0) {
+                    free(data);
+                    CLIENT_ERROR(context, "Failed to update %d.%d: error Base64 decoding", aid, iid);
+                    return HAPStatus_InvalidValue;
+                }
+#endif
+                CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with Data:", aid, iid, ch->description);
+
+                h_value = HOMEKIT_DATA(data, data_size);
+
+                break;
+            }
+            default: {
+                CLIENT_ERROR(context, "Failed to update %d.%d: unknown characteristic format %d", aid, iid, ch->format);
+                return HAPStatus_InvalidValue;
+            }
+        }
+
+        ch->setter_ex(ch, h_value);
+        homekit_characteristic_notify(ch, h_value);
+    }
+
+    cJSON *j_events = cJSON_GetObjectItem(j_ch, "ev");
+    if (j_events) {
+        if (!(ch->permissions && homekit_permissions_notify)) {
+            CLIENT_ERROR(context, "Failed to set notification state for %d.%d: "
+                  "notifications are not supported", aid, iid);
+            return HAPStatus_NotificationsUnsupported;
+        }
+
+        if ((j_events->type != cJSON_True) && (j_events->type != cJSON_False)) {
+            CLIENT_ERROR(context, "Failed to set notification state for %d.%d: "
+                  "invalid state value", aid, iid);
+        }
+
+        if (j_events->type == cJSON_True) {
+            client_subscribe_to_characteristic_events(context, ch);
+            CLIENT_INFO(context, "Subscribed to notifications of characteristic %d.%d (\"%s\")", aid, iid, ch->description);
+        } else {
+            client_unsubscribe_from_characteristic_events(context, ch);
+            CLIENT_INFO(context, "Unsubscribed from notifications of characteristic %d.%d (\"%s\")", aid, iid, ch->description);
+        }
+    }
+
+    return HAPStatus_Success;
 }
 
 void homekit_server_on_update_characteristics(client_context_t *context, const byte *data, size_t size) {
@@ -2731,360 +3167,6 @@ void homekit_server_on_update_characteristics(client_context_t *context, const b
         return;
     }
 
-    HAPStatus process_characteristics_update(const cJSON *j_ch) {
-        cJSON *j_aid = cJSON_GetObjectItem(j_ch, "aid");
-        if (!j_aid) {
-            CLIENT_ERROR(context, "Failed to process request: no \"aid\" field");
-            return HAPStatus_NoResource;
-        }
-        if (j_aid->type != cJSON_Number) {
-            CLIENT_ERROR(context, "Failed to process request: \"aid\" field is not a number");
-            return HAPStatus_NoResource;
-        }
-
-        cJSON *j_iid = cJSON_GetObjectItem(j_ch, "iid");
-        if (!j_iid) {
-            CLIENT_ERROR(context, "Failed to process request: no \"iid\" field");
-            return HAPStatus_NoResource;
-        }
-        if (j_iid->type != cJSON_Number) {
-            CLIENT_ERROR(context, "Failed to process request: \"iid\" field is not a number");
-            return HAPStatus_NoResource;
-        }
-
-        int aid = j_aid->valueint;
-        int iid = j_iid->valueint;
-
-        homekit_characteristic_t *ch = homekit_characteristic_by_aid_and_iid(
-            context->server->config->accessories, aid, iid
-        );
-        if (!ch) {
-            CLIENT_ERROR(context, "Failed to process request to update %d.%d: "
-                  "no such characteristic", aid, iid);
-            return HAPStatus_NoResource;
-        }
-
-        cJSON *j_value = cJSON_GetObjectItem(j_ch, "value");
-        if (j_value) {
-            homekit_value_t h_value = HOMEKIT_NULL();
-
-            if (!(ch->permissions & homekit_permissions_paired_write)) {
-                CLIENT_ERROR(context, "Failed to update %d.%d: no write permission", aid, iid);
-                return HAPStatus_ReadOnly;
-            }
-
-            switch (ch->format) {
-                case homekit_format_bool: {
-                    bool value = false;
-                    if (j_value->type == cJSON_True) {
-                        value = true;
-                    } else if (j_value->type == cJSON_False) {
-                        value = false;
-                    } else if (j_value->type == cJSON_Number &&
-                            (j_value->valueint == 0 || j_value->valueint == 1)) {
-                        value = j_value->valueint == 1;
-                    } else {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not a boolean or 0/1", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with boolean %s", aid, iid, ch->description, value ? "true" : "false");
-
-                    h_value = HOMEKIT_BOOL(value);
-
-                    break;
-                }
-                case homekit_format_uint8:
-                case homekit_format_uint16:
-                case homekit_format_uint32:
-                case homekit_format_uint64:
-                case homekit_format_int: {
-                    // We accept boolean values here in order to fix a bug in HomeKit. HomeKit sometimes sends a boolean instead of an integer of value 0 or 1.
-                    if (j_value->type != cJSON_Number && j_value->type != cJSON_False && j_value->type != cJSON_True) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not a number", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    double min_value = 0;
-                    double max_value = 0;
-
-                    switch (ch->format) {
-                        case homekit_format_uint8: {
-                            min_value = 0;
-                            max_value = 255;
-                            break;
-                        }
-                        case homekit_format_uint16: {
-                            min_value = 0;
-                            max_value = 65535;
-                            break;
-                        }
-                        case homekit_format_uint32: {
-                            min_value = 0;
-                            max_value = 4294967295;
-                            break;
-                        }
-                        case homekit_format_uint64: {
-                            min_value = 0;
-                            max_value = 18446744073709551615ULL;
-                            break;
-                        }
-                        case homekit_format_int: {
-                            min_value = -2147483648;
-                            max_value = 2147483647;
-                            break;
-                        }
-                        default: {
-                            // Impossible, keeping to make compiler happy
-                            break;
-                        }
-                    }
-
-                    if (ch->min_value)
-                        min_value = *ch->min_value;
-                    if (ch->max_value)
-                        max_value = *ch->max_value;
-
-                    double value = j_value->valuedouble;
-                    if (j_value->type == cJSON_True) {
-                        value = 1;
-                    } else if (j_value->type == cJSON_False) {
-                        value = 0;
-                    }
-
-                    if (value < min_value || value > max_value) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value %g is not in range %g..%g",
-                                     aid, iid, value, min_value, max_value);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    if (ch->valid_values.count) {
-                        bool matches = false;
-                        int v = (int)value;
-                        for (int i=0; i<ch->valid_values.count; i++) {
-                            if (v == ch->valid_values.values[i]) {
-                                matches = true;
-                                break;
-                            }
-                        }
-
-                        if (!matches) {
-                            CLIENT_ERROR(context, "Failed to update %d.%d: value is not one of valid values", aid, iid);
-                            return HAPStatus_InvalidValue;
-                        }
-                    }
-
-                    if (ch->valid_values_ranges.count) {
-                        bool matches = false;
-                        for (int i=0; i<ch->valid_values_ranges.count; i++) {
-                            if (value >= ch->valid_values_ranges.ranges[i].start &&
-                                    value <= ch->valid_values_ranges.ranges[i].end) {
-                                matches = true;
-                                break;
-                            }
-                        }
-
-                        if (!matches) {
-                            CLIENT_ERROR(context, "Failed to update %d.%d: value is not in valid values range", aid, iid);
-                            return HAPStatus_InvalidValue;
-                        }
-                    }
-
-                    CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with integer %g", aid, iid, ch->description, value);
-
-                    switch (ch->format) {
-                        case homekit_format_uint8:
-                            h_value = HOMEKIT_UINT8(value);
-                            break;
-                        case homekit_format_uint16:
-                            h_value = HOMEKIT_UINT16(value);
-                            break;
-                        case homekit_format_uint32:
-                            h_value = HOMEKIT_UINT32(value);
-                            break;
-                        case homekit_format_uint64:
-                            h_value = HOMEKIT_UINT64(value);
-                            break;
-                        case homekit_format_int:
-                            h_value = HOMEKIT_INT(value);
-                            break;
-
-                        default:
-                            CLIENT_ERROR(context, "Unexpected format when updating numeric value: %d", ch->format);
-                            return HAPStatus_InvalidValue;
-                    }
-
-                    break;
-                }
-                case homekit_format_float: {
-                    if (j_value->type != cJSON_Number) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not a number", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    float value = j_value->valuedouble;
-                    if ((ch->min_value && value < *ch->min_value) ||
-                            (ch->max_value && value > *ch->max_value)) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not in range", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with %g", aid, iid, ch->description, value);
-
-                    h_value = HOMEKIT_FLOAT(value);
-
-                    break;
-                }
-                case homekit_format_string: {
-                    if (j_value->type != cJSON_String) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not a string", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    int max_len = (ch->max_len) ? *ch->max_len : 64;
-
-                    char *value = j_value->valuestring;
-                    if (strlen(value) > max_len) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is too long", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with \"%s\"", aid, iid, ch->description, value);
-
-                    h_value = HOMEKIT_STRING(value);
-
-                    break;
-                }
-                case homekit_format_tlv: {
-                    if (j_value->type != cJSON_String) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not a string", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    int max_len = (ch->max_len) ? *ch->max_len : 256;
-
-                    char *value = j_value->valuestring;
-                    size_t value_len = strlen(value);
-                    if (value_len > max_len) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is too long", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    size_t tlv_size = base64_decoded_size((unsigned char*)value, value_len);
-                    byte *tlv_data = malloc(tlv_size);
-                    if (!tlv_data) {
-                        CLIENT_ERROR(context,
-                                     "Failed to update %d.%d: "
-                                     "error allocating %d bytes for Base64 decoding",
-                                     aid, iid, tlv_size);
-                        return HAPStatus_InvalidValue;
-                    }
-                    if (base64_decode((byte*) value, value_len, tlv_data) < 0) {
-                        free(tlv_data);
-                        CLIENT_ERROR(context, "Failed to update %d.%d: error Base64 decoding", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    tlv_values_t *tlv_values = tlv_new();
-                    if (!tlv_values) {
-                        free(tlv_data);
-                        CLIENT_ERROR(context, "Failed to update %d.%d: error allocating memory for TLV values", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-                    int r = tlv_parse(tlv_data, tlv_size, tlv_values);
-                    free(tlv_data);
-
-                    if (r) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: error parsing TLV", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with TLV:", aid, iid, ch->description);
-                    for (tlv_t *t=tlv_values->head; t; t=t->next) {
-                        char *escaped_payload = binary_to_string(t->value, t->size);
-                        CLIENT_DEBUG(context, "  Type %d value (%d bytes): %s", t->type, t->size, escaped_payload);
-                        free(escaped_payload);
-                    }
-
-                    h_value = HOMEKIT_TLV(tlv_values);
-
-                    tlv_free(tlv_values);
-                    break;
-                }
-                case homekit_format_data: {
-                    if (j_value->type != cJSON_String) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is not a string", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    // Default max data len = 2,097,152 but that does not make sense
-                    // for this accessory
-                    int max_len = (ch->max_data_len) ? *ch->max_data_len : 4096;
-
-                    char *value = j_value->valuestring;
-                    size_t value_len = strlen(value);
-                    if (value_len > max_len) {
-                        CLIENT_ERROR(context, "Failed to update %d.%d: value is too long", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    size_t data_size = base64_decoded_size((unsigned char*)value, value_len);
-                    byte *data = malloc(data_size);
-                    if (!data) {
-                        CLIENT_ERROR(context,
-                                     "Failed to update %d.%d: "
-                                     "error allocating %d bytes for Base64 decoding",
-                                     aid, iid, data_size);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    if (base64_decode((byte*) value, value_len, data) < 0) {
-                        free(data);
-                        CLIENT_ERROR(context, "Failed to update %d.%d: error Base64 decoding", aid, iid);
-                        return HAPStatus_InvalidValue;
-                    }
-
-                    CLIENT_INFO(context, "Updating characteristic %d.%d (\"%s\") with Data:", aid, iid, ch->description);
-
-                    h_value = HOMEKIT_DATA(data, data_size);
-
-                    break;
-                }
-                default: {
-                    CLIENT_ERROR(context, "Failed to update %d.%d: unknown characteristic format %d", aid, iid, ch->format);
-                    return HAPStatus_InvalidValue;
-                }
-            }
-
-            ch->setter_ex(ch, h_value);
-            homekit_characteristic_notify(ch, h_value);
-        }
-
-        cJSON *j_events = cJSON_GetObjectItem(j_ch, "ev");
-        if (j_events) {
-            if (!(ch->permissions && homekit_permissions_notify)) {
-                CLIENT_ERROR(context, "Failed to set notification state for %d.%d: "
-                      "notifications are not supported", aid, iid);
-                return HAPStatus_NotificationsUnsupported;
-            }
-
-            if ((j_events->type != cJSON_True) && (j_events->type != cJSON_False)) {
-                CLIENT_ERROR(context, "Failed to set notification state for %d.%d: "
-                      "invalid state value", aid, iid);
-            }
-
-            if (j_events->type == cJSON_True) {
-                client_subscribe_to_characteristic_events(context, ch);
-                CLIENT_INFO(context, "Subscribed to notifications of characteristic %d.%d (\"%s\")", aid, iid, ch->description);
-            } else {
-                client_unsubscribe_from_characteristic_events(context, ch);
-                CLIENT_INFO(context, "Unsubscribed from notifications of characteristic %d.%d (\"%s\")", aid, iid, ch->description);
-            }
-        }
-
-        return HAPStatus_Success;
-    }
-
     HAPStatus *statuses = malloc(sizeof(HAPStatus) * cJSON_GetArraySize(characteristics));
     if (!statuses) {
         CLIENT_ERROR(context, "Failed to allocate %d bytes for characteristic update statuses",
@@ -3102,7 +3184,7 @@ void homekit_server_on_update_characteristics(client_context_t *context, const b
         CLIENT_DEBUG(context, "Processing element %s", s);
         free(s);
 
-        statuses[i] = process_characteristics_update(j_ch);
+        statuses[i] = process_characteristics_update(context, j_ch);
 
         if (statuses[i] != HAPStatus_Success)
             has_errors = true;
@@ -3637,12 +3719,18 @@ static http_parser_settings homekit_http_parser_settings = {
 };
 
 
-static void homekit_client_process(client_context_t *context) {
+static void homekit_client_process(client_context_t *context, char *data, unsigned short len) {
     context->server->parser.data = context;
 
     size_t data_available = 0;
 
     do {
+#if defined(ESP_NONOS)
+        int data_len = len;
+        memcpy(context->server->data+data_available, data, len);
+        data = NULL;
+        len = 0;
+#else
         int data_len = read(
             context->socket,
             context->server->data+data_available,
@@ -3661,7 +3749,7 @@ static void homekit_client_process(client_context_t *context) {
             }
             continue;
         }
-
+#endif
         CLIENT_DEBUG(context, "Got %d incoming data", data_len);
         byte *payload = (byte *)context->server->data;
         size_t payload_size = (size_t)data_len;
@@ -3708,6 +3796,12 @@ static void homekit_client_process(client_context_t *context) {
 
 
 void homekit_server_close_client(homekit_server_t *server, client_context_t *context) {
+#if defined(ESP_NONOS)
+    char address_buffer[16];
+    sprintf(address_buffer, IPSTR, IP2STR(context->conn->proto.tcp->remote_ip));
+    espconn_disconnect(context->conn);
+    espconn_delete(context->conn);
+#else
     char address_buffer[INET_ADDRSTRLEN];
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -3716,17 +3810,17 @@ void homekit_server_close_client(homekit_server_t *server, client_context_t *con
     } else {
         strcpy(address_buffer, "?.?.?.?");
     }
+    FD_CLR(context->socket, &server->fds);
+    close(context->socket);
+#endif
     CLIENT_INFO(context, "Closing client connection from %s",address_buffer);
 
-    FD_CLR(context->socket, &server->fds);
     server->client_count--;
 
     bitset_clear(server->client_ids, context->id);
     for (uint16_t nid=0; nid < server->notify_count; nid++) {
         bitset_clear(server->subscriptions, nid * HOMEKIT_MAX_CLIENTS + context->id);
     }
-
-    close(context->socket);
 
     if (server->pairing_context && server->pairing_context->client == context) {
         pairing_context_free(server->pairing_context);
@@ -3739,6 +3833,9 @@ void homekit_server_close_client(homekit_server_t *server, client_context_t *con
 }
 
 
+#if defined(ESP_NONOS)
+client_context_t *homekit_server_accept_client(homekit_server_t *server, struct espconn *conn) {
+#else
 client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     int s = accept(server->listen_fd, (struct sockaddr *)NULL, (socklen_t *)NULL);
     if (s < 0) {
@@ -3769,7 +3866,7 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
 
     const int maxpkt = 4; /* Drop connection after 4 probes without response */
     setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(maxpkt));
-
+#endif
     client_context_t *context = client_context_new();
     if (!context) {
         ERROR("Failed to allocate memory for client context");
@@ -3793,6 +3890,22 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
         return NULL;
     }
 
+#if defined(ESP_NONOS)
+    context->conn = conn;
+    server->client_count++;
+
+    char address_buffer[16];
+    sprintf(address_buffer, IPSTR, IP2STR(conn->proto.tcp->remote_ip));
+
+    CLIENT_INFO(context, "Got new client connection from %s", address_buffer);
+
+    client_context_t *c = server->clients;
+    while (c) {
+        sprintf(address_buffer, IPSTR, IP2STR(c->conn->proto.tcp->remote_ip));
+        CLIENT_INFO(c, " Have existing connection from %s %s", address_buffer, c->disconnect?"X":"");
+        c = c->next;
+    }
+#else
     context->socket = s;
     context->next = server->clients;
 
@@ -3825,6 +3938,7 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
         CLIENT_INFO(c, " Have existing connection from %s %s", address_buffer, c->disconnect?"X":"");
         c = c->next;
     }
+#endif
 
     server->clients = context;
 
@@ -3942,8 +4056,10 @@ void homekit_server_process_notifications(homekit_server_t *server) {
 
 
 void homekit_server_close_clients(homekit_server_t *server) {
+#if defined(ESP_NONOS)
+#else
     int max_fd = server->listen_fd;
-
+#endif
     client_context_t head;
     head.next = server->clients;
 
@@ -3955,22 +4071,28 @@ void homekit_server_close_clients(homekit_server_t *server) {
             context->next = tmp->next;
             homekit_server_close_client(server, tmp);
         } else {
+#if defined(ESP_NONOS)
+#else
             if (tmp->socket > max_fd)
                 max_fd = tmp->socket;
-
+#endif
             context = tmp;
         }
     }
 
     server->clients = head.next;
+#if defined(ESP_NONOS)
+#else
     server->max_fd = max_fd;
+#endif
 }
 
 
 static void homekit_run_server(homekit_server_t *server)
 {
     DEBUG("Starting HTTP server");
-
+#if defined(ESP_NONOS)
+#else
     struct sockaddr_in serv_addr;
     server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server->listen_fd < 0) {
@@ -4038,6 +4160,7 @@ static void homekit_run_server(homekit_server_t *server)
     }
 
     server_free(server);
+#endif
 }
 
 
@@ -4106,10 +4229,22 @@ void homekit_setup_mdns(homekit_server_t *server) {
             data[data_size-1] = 0;
 
             unsigned char shaHash[SHA512_DIGEST_SIZE];
+#ifdef USE_WOLFSSL
             wc_Sha512Hash((const unsigned char *)data, data_size-1, shaHash);
+#else
+            size_t len = data - 1;
+            sha512_vector(1, &data, &len, shaHash);
+#endif
 
             free(data);
 
+#if defined(ESP_NONOS)
+            size_t encodedHash_len = 0;
+            char *encodedHash = base64_encode_no_lf(shaHash, 4, &encodedHash_len);
+
+            homekit_mdns_add_txt("sh", "%s", encodedHash);
+            os_free(encodedHash);
+#else
             unsigned char encodedHash[9];
             memset(encodedHash, 0, sizeof(encodedHash));
 
@@ -4117,6 +4252,7 @@ void homekit_setup_mdns(homekit_server_t *server) {
             Base64_Encode_NoNl((const unsigned char *)shaHash, 4, encodedHash, &len);
 
             homekit_mdns_add_txt("sh", "%s", encodedHash);
+#endif
         }
     }
 
@@ -4404,13 +4540,15 @@ void homekit_server_init(homekit_server_config_t *config) {
         server = NULL;
         return;
     }
-
+#if defined(ESP_NONOS)
+#else
     if (pdPASS != xTaskCreate(homekit_server_task, "HomeKit Server",
                               SERVER_TASK_STACK, server, 1, NULL)) {
         ERROR("Error initializing HomeKit accessory server: "
               "failed to start a server task");
         server_free(server);
     }
+#endif
 }
 
 void homekit_server_reset() {

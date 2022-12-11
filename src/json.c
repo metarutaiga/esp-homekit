@@ -192,8 +192,8 @@ void _json_number(json_stream *json, const char *value, size_t len) {
     if (json->state == JSON_STATE_ERROR)
         return;
 
-    void _do_write() {
-        json_write(json, value, len);
+#define _do_write() { \
+        json_write(json, value, len); \
     }
 
     switch (json->state) {
@@ -216,6 +216,7 @@ void _json_number(json_stream *json, const char *value, size_t len) {
             DEBUG_STATE(json);
             json->state = JSON_STATE_ERROR;
     }
+#undef _do_write
 }
 
 
@@ -270,11 +271,11 @@ void json_string(json_stream *json, const char *x) {
     if (json->state == JSON_STATE_ERROR)
         return;
 
-    void _do_write() {
         // TODO: escape string
-        json_put(json, '"');
-        json_write(json, x, strlen(x));
-        json_put(json, '"');
+#define _do_write() { \
+        json_put(json, '"'); \
+        json_write(json, x, strlen(x)); \
+        json_put(json, '"'); \
     }
 
     switch (json->state) {
@@ -304,17 +305,18 @@ void json_string(json_stream *json, const char *x) {
             DEBUG_STATE(json);
             json->state = JSON_STATE_ERROR;
     }
+#undef _do_write
 }
 
 void json_boolean(json_stream *json, bool x) {
     if (json->state == JSON_STATE_ERROR)
         return;
 
-    void _do_write() {
-        if (x)
-            json_write(json, "true", 4);
-        else
-            json_write(json, "false", 5);
+#define _do_write() { \
+        if (x) \
+            json_write(json, "true", 4); \
+        else \
+            json_write(json, "false", 5); \
     }
 
     switch (json->state) {
@@ -337,14 +339,15 @@ void json_boolean(json_stream *json, bool x) {
             DEBUG_STATE(json);
             json->state = JSON_STATE_ERROR;
     }
+#undef _do_write
 }
 
 void json_null(json_stream *json) {
     if (json->state == JSON_STATE_ERROR)
         return;
 
-    void _do_write() {
-        json_write(json, "null", 4);
+#define _do_write() { \
+        json_write(json, "null", 4); \
     }
 
     switch (json->state) {
@@ -367,5 +370,6 @@ void json_null(json_stream *json) {
             DEBUG_STATE(json);
             json->state = JSON_STATE_ERROR;
     }
+#undef _do_write
 }
 #pragma GCC diagnostic pop

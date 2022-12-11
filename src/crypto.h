@@ -3,8 +3,17 @@
 
 #include <stdlib.h>
 
+#ifdef USE_WOLFSSL
+#include <wolfssl/wolfcrypt/hash.h>
+#include <wolfssl/wolfcrypt/coding.h>
 #include <wolfssl/wolfcrypt/ed25519.h>
 #include <wolfssl/wolfcrypt/curve25519.h>
+#else
+int sha512_vector(size_t num_elem, const uint8_t *addr[], const size_t *len, uint8_t *mac);
+#define SHA512_DIGEST_SIZE 64
+typedef int curve25519_key;
+typedef int ed25519_key;
+#endif
 
 typedef unsigned char byte;
 
@@ -94,7 +103,7 @@ int crypto_ed25519_verify(
 
 // CURVE25519
 int crypto_curve25519_init(curve25519_key *key);
-int crypto_curve25519_done(curve25519_key *key);
+void crypto_curve25519_done(curve25519_key *key);
 int crypto_curve25519_generate(curve25519_key *key);
 int crypto_curve25519_import_public(
     curve25519_key *key,

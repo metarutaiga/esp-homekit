@@ -1,5 +1,51 @@
 #include <stdarg.h>
 
+#ifdef ESP_NONOS
+
+#define __cplusplus
+#include <os_type.h>
+#undef __cplusplus
+#include <osapi.h>
+#include <user_interface.h>
+
+uint32_t homekit_random() {
+    return os_random();
+}
+
+void homekit_random_fill(uint8_t *data, size_t size) {
+    os_get_random(data, size);
+}
+
+void homekit_system_restart() {
+    system_restart();
+}
+
+void homekit_overclock_start() {
+    
+}
+
+void homekit_overclock_end() {
+    
+}
+
+void homekit_mdns_init() {
+    
+}
+
+void homekit_mdns_configure_init(const char *instance_name, int port) {
+    
+}
+
+void homekit_mdns_add_txt(const char *key, const char *format, ...) {
+    
+}
+
+void homekit_mdns_configure_finalize() {
+    
+}
+
+#endif
+
 #ifdef ESP_OPEN_RTOS
 
 #include <FreeRTOS.h>
