@@ -11,9 +11,29 @@
 #include <wolfssl/wolfcrypt/srp.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 #else
-int hmac_sha512_kdf(const uint8_t *secret, size_t secret_len, const char *label, const uint8_t *seed, size_t seed_len, uint8_t *out, size_t outlen);
-typedef uint32_t SrpHash;
-typedef uint32_t word32;
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+#include <errno.h>
+#include <crypto/sha512.h>
+#include <crypto/sha512_i.h>
+#include <crypto/tls/bignum.h>
+#define SRP_MODULUS_MIN_BITS 512
+#define SRP_PRIVATE_KEY_MIN_BITS 256
+typedef struct _Srp {
+    struct sha512_state client_proof;
+    struct sha512_state server_proof;
+    struct bignum      *N;
+    struct bignum      *g;
+    struct bignum      *auth;
+    struct bignum      *priv;
+    uint8_t             k[SHA512_BLOCK_SIZE];
+    uint8_t            *key;
+    uint32_t            keySz;
+    uint8_t            *salt;
+    uint32_t            saltSz;
+} Srp;
 #endif
 
 #include "port.h"
@@ -61,8 +81,8 @@ const byte N[] = {
 const byte g[] = {0x05};
 
 
-int wc_SrpSetKeyH(Srp *srp, byte *secret, word32 size) {
 #ifdef USE_WOLFSSL
+int wc_SrpSetKeyH(Srp *srp, byte *secret, word32 size) {
     SrpHash hash;
     int r = BAD_FUNC_ARG;
 
@@ -75,51 +95,85 @@ int wc_SrpSetKeyH(Srp *srp, byte *secret, word32 size) {
     r = wc_InitSha512(&hash.data.sha512);
     if (!r) r = wc_Sha512Update(&hash.data.sha512, secret, size);
     if (!r) r = wc_Sha512Final(&hash.data.sha512, srp->key);
+#else
+int crypto_srp_key(Srp *srp, u8 *secret, u32 size) {
+    struct sha512_state hash;
+    int r = 0;
 
+    srp->key = malloc(SHA512_BLOCK_SIZE);
+    if (!srp->key)
+        return ENOMEM;
+
+    srp->keySz = SHA512_BLOCK_SIZE;
+
+    sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, secret, size);
+    if (!r) r = sha512_done(&hash, srp->key);
+#endif
     // clean up hash data from stack for security
     memset(&hash, 0, sizeof(hash));
 
     return r;
-#else
-    return 0;
-#endif
 }
 
 
 Srp *crypto_srp_new() {
-#ifdef USE_WOLFSSL
     Srp *srp = malloc(sizeof(Srp));
 
     DEBUG("Initializing SRP");
+#ifdef USE_WOLFSSL
     int r = wc_SrpInit(srp, SRP_TYPE_SHA512, SRP_CLIENT_SIDE);
     if (r) {
         DEBUG("Failed to initialize SRP (code %d)", r);
         return NULL;
     }
     srp->keyGenFunc_cb = wc_SrpSetKeyH;
-
-    return srp;
 #else
-    return NULL;
+    sha512_init(&srp->client_proof);
+    sha512_init(&srp->server_proof);
+    srp->N = bignum_init();
+    srp->g = bignum_init();
+    srp->auth = bignum_init();
+    srp->priv = bignum_init();
+    srp->key = NULL;
+    srp->keySz = 0;
+    srp->salt = NULL;
+    srp->saltSz = 0;
+    if (srp->N == NULL || srp->g == NULL || srp->auth == NULL || srp->priv == NULL) {
+        bignum_deinit(srp->N);
+        bignum_deinit(srp->g);
+        bignum_deinit(srp->auth);
+        bignum_deinit(srp->priv);
+        free(srp);
+        return NULL;
+    }
 #endif
+    return srp;
 }
 
 
 void crypto_srp_free(Srp *srp) {
 #ifdef USE_WOLFSSL
     wc_SrpTerm(srp);
-    free(srp);
 #else
+    if (srp) {
+        bignum_deinit(srp->N);
+        bignum_deinit(srp->g);
+        bignum_deinit(srp->auth);
+        bignum_deinit(srp->priv);
+        free(srp->key);
+        free(srp->salt);
+    }
 #endif
+    free(srp);
 }
 
 
 int crypto_srp_init(Srp *srp, const char *username, const char *password) {
-#ifdef USE_WOLFSSL
     DEBUG("Generating salt");
     byte salt[16];
     homekit_random_fill(salt, sizeof(salt));
-
+#ifdef USE_WOLFSSL
     int r;
     DEBUG("Setting SRP username");
     r = wc_SrpSetUsername(srp, (byte*)username, strlen(username));
@@ -165,13 +219,125 @@ int crypto_srp_init(Srp *srp, const char *username, const char *password) {
 
     return 0;
 #else
+    struct sha512_state hash;
+    byte digest1[SHA512_BLOCK_SIZE];
+    byte digest2[SHA512_BLOCK_SIZE];
+    byte pad = 0;
+    int i = 0;
+    int j = 0;
+    int r = 0;
+
+    DEBUG("Setting SRP params");
+
+    /* Set N */
+    if (bignum_set_unsigned_bin(srp->N, N, sizeof(N)) != 0)
+        return EINVAL;
+
+    if (bignum_get_unsigned_bin_len(srp->N) < SRP_MODULUS_MIN_BITS)
+        return EINVAL;
+
+    /* Set g */
+    if (bignum_set_unsigned_bin(srp->g, g, sizeof(g)) != 0)
+        return EINVAL;
+
+    if (bignum_cmp(srp->N, srp->g) != 1)
+        return EINVAL;
+
+    /* Set salt */
+    srp->salt = malloc(sizeof(salt));
+    if (srp->salt == NULL)
+        return ENOMEM;
+
+    memcpy(srp->salt, salt, sizeof(salt));
+    srp->saltSz = sizeof(salt);
+
+    DEBUG("Setting SRP username");
+
+    /* Set k = H(N, g) */
+                sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, N, sizeof(N));
+    for (i = 0; i < sizeof(N) - sizeof(g); i++) {
+        if (!r) r = sha512_process(&hash, &pad, 1);
+    }
+    if (!r) r = sha512_process(&hash, g, sizeof(g));
+    if (!r) r = sha512_done(&hash, srp->k);
+
+    /* update client proof */
+
+    /* digest1 = H(N) */
+                sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, N, sizeof(N));
+    if (!r) r = sha512_done(&hash, digest1);
+
+    /* digest2 = H(g) */
+                sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, g, sizeof(g));
+    if (!r) r = sha512_done(&hash, digest2);
+
+    /* digest1 = H(N) ^ H(g) */
+    if (r == 0) {
+        for (i = 0, j = SHA512_BLOCK_SIZE; i < j; i++)
+            digest1[i] ^= digest2[i];
+    }
+
+    /* digest2 = H(user) */
+                sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, username, strlen(username));
+    if (!r) r = sha512_done(&hash, digest2);
+
+    /* client proof = H( H(N) ^ H(g) | H(user) | salt) */
+    if (!r) r = sha512_process(&srp->client_proof, digest1, j);
+    if (!r) r = sha512_process(&srp->client_proof, digest2, j);
+    if (!r) r = sha512_process(&srp->client_proof, salt, sizeof(salt));
+
+    DEBUG("Setting SRP password");
+
+    /* digest = H(username | ':' | password) */
+                sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, username, strlen(username));
+    if (!r) r = sha512_process(&hash, ":", 1);
+    if (!r) r = sha512_process(&hash, password, strlen(password));
+    if (!r) r = sha512_done(&hash, digest1);
+
+    /* digest = H(salt | H(username | ':' | password)) */
+                sha512_init(&hash);
+    if (!r) r = sha512_process(&hash, srp->salt, srp->saltSz);
+    if (!r) r = sha512_process(&hash, digest1, SHA512_BLOCK_SIZE);
+    if (!r) r = sha512_done(&hash, digest1);
+
+    /* Set x (private key) */
+    if (!r) r = bignum_set_unsigned_bin(srp->auth, digest1, SHA512_BLOCK_SIZE);
+
+    DEBUG("Getting SRP verifier");
+    size_t verifierLen = 1024;
+    uint8_t verifier[verifierLen];
+
+    /* v = g ^ x % N */
+    struct bignum *v = bignum_init();
+    if (v) {
+        if (!r) r = bignum_exptmod(srp->g, srp->auth, srp->N, v);
+//      if (!r) r = verifierLen < bignum_get_unsigned_bin_len(v) ? ENOMEM : 0;
+        if (!r) r = bignum_get_unsigned_bin(v, verifier, &verifierLen);
+        bignum_deinit(v);
+    }
+    if (r) {
+        DEBUG("Failed to get SRP verifier (code %d)", r);
+        return r;
+    }
+
+    DEBUG("Setting SRP verifier");
+    r = bignum_set_unsigned_bin(srp->auth, verifier, verifierLen);
+    if (r) {
+        DEBUG("Failed to set SRP verifier (code %d)", r);
+        return r;
+    }
+
     return 0;
 #endif
 }
 
 
 int crypto_srp_get_salt(Srp *srp, byte *buffer, size_t *buffer_size) {
-#ifdef USE_WOLFSSL
     if (buffer_size == NULL)
         return -1;
 
@@ -183,14 +349,10 @@ int crypto_srp_get_salt(Srp *srp, byte *buffer, size_t *buffer_size) {
     memcpy(buffer, srp->salt, srp->saltSz);
     *buffer_size = srp->saltSz;
     return 0;
-#else
-    return 0;
-#endif
 }
 
 
 int crypto_srp_get_public_key(Srp *srp, byte *buffer, size_t *buffer_size) {
-#ifdef USE_WOLFSSL
     if (buffer_size == NULL)
         return -1;
 
@@ -201,13 +363,41 @@ int crypto_srp_get_public_key(Srp *srp, byte *buffer, size_t *buffer_size) {
     }
 
     DEBUG("Calculating public key");
+#ifdef USE_WOLFSSL
     word32 len = *buffer_size;
     int r = wc_SrpGetPublic(srp, buffer, &len);
     *buffer_size = len;
-    return r;
 #else
-    return 0;
+    struct bignum *pubkey = bignum_init();
+    int r = 0;
+
+    /* priv = random() */
+    if (bignum_get_unsigned_bin_len(srp->priv) == 0) {
+        struct bignum *p = bignum_init();
+        homekit_random_fill(buffer, SRP_PRIVATE_KEY_MIN_BITS / 8);
+        if (!r) r = bignum_set_unsigned_bin(p, buffer, SRP_PRIVATE_KEY_MIN_BITS / 8);
+        if (!r) r = bignum_mod(p, srp->N, srp->priv);
+//      if (!r) r = bignum_get_unsigned_bin_len(srp->priv) == 0 ? SRP_BAD_KEY_E : 0;
+        bignum_deinit(p);
+    }
+
+    /* server side: B = (k * v + (g ^ b % N)) % N */
+    struct bignum *i = bignum_init();
+    struct bignum *j = bignum_init();
+    if (!r) r = bignum_set_unsigned_bin(i, srp->k, SHA512_BLOCK_SIZE);
+//  if (!r) r = bignum_get_unsigned_bin_len(i) == 0 ? SRP_BAD_KEY_E : 0;
+    if (!r) r = bignum_exptmod(srp->g, srp->priv, srp->N, pubkey);
+    if (!r) r = bignum_mulmod(i, srp->auth, srp->N, j);
+    if (!r) r = bignum_add(j, pubkey, i);
+    if (!r) r = bignum_mod(i, srp->N, pubkey);
+    bignum_deinit(i);
+    bignum_deinit(j);
+
+    /* extract public key to buffer */
+    if (!r) r = bignum_get_unsigned_bin(pubkey, buffer, buffer_size);
+    bignum_deinit(pubkey);
 #endif
+    return r;
 }
 
 
@@ -222,15 +412,98 @@ int crypto_srp_compute_key(
         (byte *)client_public_key, client_public_key_size,
         (byte *)server_public_key, server_public_key_size
     );
+#else
+    /* initializing variables */
+
+    byte *secret;
+    size_t secretSz = bignum_get_unsigned_bin_len(srp->N);
+    if ((secret = malloc(secretSz)) == NULL)
+        return ENOMEM;
+
+    struct bignum *u = bignum_init();
+    struct bignum *s = bignum_init();
+    struct bignum *temp1 = bignum_init();
+    struct bignum *temp2 = bignum_init();
+    if (u == NULL || s == NULL || temp1 == NULL || temp2 == NULL) {
+        free(secret);
+        bignum_deinit(u);
+        bignum_deinit(s);
+        bignum_deinit(temp1);
+        bignum_deinit(temp2);
+        return ENOMEM;
+    }
+
+    /* building u (random scrambling parameter) */
+
+    struct sha512_state hash;
+    sha512_init(&hash);
+
+    int i = 0;
+    int r = 0;
+    byte pad = 0;
+
+    /* H(A) */
+    for (i = 0; !r && i < secretSz - client_public_key_size; i++)
+        r = sha512_process(&hash, &pad, 1);
+    if (!r) r = sha512_process(&hash, client_public_key, client_public_key_size);
+
+    /* H(A | B) */
+    for (i = 0; !r && i < secretSz - server_public_key_size; i++)
+        r = sha512_process(&hash, &pad, 1);
+    if (!r) r = sha512_process(&hash, server_public_key, server_public_key_size);
+
+    /* set u */
+    byte digest[SHA512_BLOCK_SIZE];
+    if (!r) r = sha512_done(&hash, digest);
+    if (!r) r = bignum_set_unsigned_bin(u, digest, SHA512_BLOCK_SIZE);
+
+    /* building s (secret) */
+
+    /* temp1 = v ^ u % N */
+    r = bignum_exptmod(srp->auth, u, srp->N, temp1);
+
+    /* temp2 = A * temp1 % N; rejects A == 0, A >= N */
+    if (!r) r = bignum_set_unsigned_bin(s, client_public_key, client_public_key_size);
+//  if (!r) r = bignum_get_unsigned_bin_len(s) == 0 ? EINVAL : 0;
+//  if (!r) r = bignum_cmp(s, srp->N) != -1 ? EINVAL : 0;
+    if (!r) r = bignum_mulmod(s, temp1, srp->N, temp2);
+
+    /* rejects A * v ^ u % N >= 1, A * v ^ u % N == -1 % N */
+    if (!r) r = bignum_set_unsigned_bin(temp1, "\001", 1);
+//  if (!r) r = bignum_cmp(temp2, temp1) != 1 ? EINVAL : 0;
+    if (!r) r = bignum_sub(srp->N, temp1, s);
+//  if (!r) r = bignum_cmp(temp2, s) == 0 ? EINVAL : 0;
+
+    /* secret = temp2 * b % N */
+    if (!r) r = bignum_exptmod(temp2, srp->priv, srp->N, s);
+
+    /* building session key from secret */
+
+    if (!r) r = bignum_get_unsigned_bin(s, secret, &secretSz);
+    if (!r) r = crypto_srp_key(srp, secret, bignum_get_unsigned_bin_len(s));
+
+    /* updating client proof = H( H(N) ^ H(g) | H(user) | salt | A | B | K) */
+
+    if (!r) r = sha512_process(&srp->client_proof, client_public_key, client_public_key_size);
+    if (!r) r = sha512_process(&srp->client_proof, server_public_key, server_public_key_size);
+    if (!r) r = sha512_process(&srp->client_proof, srp->key, srp->keySz);
+
+    /* updating server proof = H(A) */
+
+    if (!r) r = sha512_process(&srp->server_proof, client_public_key, client_public_key_size);
+
+    free(secret);
+    bignum_deinit(&u);
+    bignum_deinit(&s);
+    bignum_deinit(&temp1);
+    bignum_deinit(&temp2);
+#endif
     if (r) {
         DEBUG("Failed to generate SRP shared secret key (code %d)", r);
         return r;
     }
 
     return 0;
-#else
-    return 0;
-#endif
 }
 
 
@@ -244,16 +517,24 @@ int crypto_srp_verify(Srp *srp, const byte *proof, size_t proof_size) {
 
     return 0;
 #else
-    return 0;
+    byte digest[SHA512_BLOCK_SIZE];
+    int r = sha512_done(&srp->client_proof, digest);
+
+    /* server proof = H( A | client proof | K) */
+    if (!r) r = sha512_process(&srp->server_proof, proof, proof_size);
+    if (!r) r = sha512_process(&srp->server_proof, srp->key, srp->keySz);
+    if (!r && memcmp(proof, digest, proof_size) != 0)
+        r = EINVAL;
+
+    return r;
 #endif
 }
 
 
 int crypto_srp_get_proof(Srp *srp, byte *proof, size_t *proof_size) {
-#ifdef USE_WOLFSSL
     if (proof_size == NULL)
         return -1;
-
+#ifdef USE_WOLFSSL
     if (*proof_size < WC_SHA512_DIGEST_SIZE) {
         *proof_size = WC_SHA512_DIGEST_SIZE;
         return -2;
@@ -262,11 +543,18 @@ int crypto_srp_get_proof(Srp *srp, byte *proof, size_t *proof_size) {
     word32 proof_len = *proof_size;
     int r = wc_SrpGetProof(srp, proof, &proof_len);
     *proof_size = proof_len;
-
-    return r;
 #else
-    return 0;
+    if (*proof_size < SHA512_BLOCK_SIZE) {
+        *proof_size = SHA512_BLOCK_SIZE;
+        return -2;
+    }
+
+    int r = 0;
+    if ((r = sha512_done(&srp->server_proof, proof)) != 0)
+        return r;
+    *proof_size = SHA512_BLOCK_SIZE;
 #endif
+    return r;
 }
 
 
@@ -309,16 +597,12 @@ int crypto_srp_hkdf(
     const byte *info, size_t info_size,
     byte *output, size_t *output_size
 ) {
-#ifdef USE_WOLFSSL
     return crypto_hkdf(
         srp->key, srp->keySz,
         salt, salt_size,
         info, info_size,
         output, output_size
     );
-#else
-    return 0;
-#endif
 }
 
 
