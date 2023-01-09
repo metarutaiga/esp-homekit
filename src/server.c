@@ -3793,13 +3793,12 @@ static void homekit_client_process(client_context_t *context) {
 #if defined(ESP_NONOS)
 void homekit_server_close_client(struct espconn *s) {
     client_context_t *context = s->reverse;
-    if (context == NULL)
-        return;
     homekit_server_t *server = context->server;
     char address_buffer[INET_ADDRSTRLEN];
     sprintf(address_buffer, IPSTR, IP2STR(context->socket->proto.tcp->remote_ip));
 #else
-void homekit_server_close_client(homekit_server_t *server, client_context_t *context) {
+void homekit_server_close_client(client_context_t *context) {
+    homekit_server_t *server = context->server;
     char address_buffer[INET_ADDRSTRLEN];
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -4065,11 +4064,7 @@ void homekit_server_close_clients(homekit_server_t *server) {
 
         if (tmp->disconnect) {
             context->next = tmp->next;
-#if defined(ESP_NONOS)
             homekit_server_close_client(tmp->socket);
-#else
-            homekit_server_close_client(server, tmp);
-#endif
         } else {
             if (tmp->socket > max_fd)
                 max_fd = tmp->socket;

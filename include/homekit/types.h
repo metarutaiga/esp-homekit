@@ -156,13 +156,13 @@ void homekit_value_free(homekit_value_t *value);
 
 typedef struct {
     int count;
-    uint8_t *values;
+    uint32_t *values;
 } homekit_valid_values_t;
 
 
 typedef struct {
-    uint8_t start;
-    uint8_t end;
+    uint32_t start;
+    uint32_t end;
 } homekit_valid_values_range_t;
 
 
@@ -187,9 +187,9 @@ typedef struct _homekit_characteristic_change_callback {
 struct _homekit_characteristic {
     homekit_service_t *service;
 
-    // Although spec defines ID as uint64_t, uint16_t should be sufficient in most situations
-    uint16_t id;
-    uint16_t notification_id;
+    // Although spec defines ID as uint64_t, uint32_t should be sufficient in most situations
+    uint32_t id;
+    uint32_t notification_id;
     const char *type;
     const char *description;
     homekit_format_t format;
@@ -219,19 +219,19 @@ struct _homekit_characteristic {
 struct _homekit_service {
     homekit_accessory_t *accessory;
 
-    // Although spec defines ID as uint64_t, uint16_t should be sufficient in most situations
-    uint16_t id;
+    // Although spec defines ID as uint64_t, uint32_t should be sufficient in most situations
+    uint32_t id;
     const char *type;
-    bool hidden;
-    bool primary;
+    int hidden;
+    int primary;
 
     homekit_service_t **linked;
     homekit_characteristic_t **characteristics;
 };
 
 struct _homekit_accessory {
-    // Although spec defines ID as uint64_t, uint16_t should be sufficient in most situations
-    uint16_t id;
+    // Although spec defines ID as uint64_t, uint32_t should be sufficient in most situations
+    uint32_t id;
 
     homekit_accessory_category_t category;
     int config_number;

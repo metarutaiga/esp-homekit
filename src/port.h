@@ -25,6 +25,7 @@ void homekit_overclock_end();
 #define sprintf os_sprintf
 #define snprintf os_snprintf
 #define toupper(c) ((c >= 'a' && c <= 'z') ? (c - 0x20) : c)
+#define HOMEKIT_SHORT_APPLE_UUIDS
 #define SPIFLASH_BASE_ADDR 0x100000
 #define SPI_FLASH_SECTOR_SIZE SPI_FLASH_SEC_SIZE
 #define spiflash_read(addr, buffer, size) (spi_flash_read((addr), (buffer), (size)) == ESP_OK)

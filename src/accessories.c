@@ -259,9 +259,9 @@ homekit_characteristic_t* homekit_characteristic_clone(homekit_characteristic_t*
 
     if (ch->valid_values.count) {
         clone->valid_values.count = ch->valid_values.count;
-        clone->valid_values.values = (uint8_t*) p;
+        clone->valid_values.values = (uint32_t*) p;
         memcpy(clone->valid_values.values, ch->valid_values.values,
-               sizeof(uint8_t) * ch->valid_values.count);
+               sizeof(uint32_t) * ch->valid_values.count);
 
         p += align_size(sizeof(uint8_t) * ch->valid_values.count);
     }

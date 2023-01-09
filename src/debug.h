@@ -6,19 +6,19 @@
 
 typedef unsigned char byte;
 
-#define HOMEKIT_DEBUG 1
 #ifdef HOMEKIT_DEBUG
 
 #define DEBUG(message, ...) printf(">>> %s: " message "\n", __func__, ##__VA_ARGS__)
+#define ERROR(message, ...) printf("!!! HomeKit: " message "\n", ##__VA_ARGS__)
+#define INFO(message, ...) printf(">>> HomeKit: " message "\n", ##__VA_ARGS__)
 
 #else
 
 #define DEBUG(message, ...)
+#define ERROR(message, ...)
+#define INFO(message, ...)
 
 #endif
-
-#define INFO(message, ...) printf(">>> HomeKit: " message "\n", ##__VA_ARGS__)
-#define ERROR(message, ...) printf("!!! HomeKit: " message "\n", ##__VA_ARGS__)
 
 #if defined(ESP_NONOS)
 
