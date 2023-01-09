@@ -52,6 +52,7 @@ int homekit_get_setup_uri(const homekit_server_config_t *config,
 
 // Initialize HomeKit accessory server
 void homekit_server_init(homekit_server_config_t *config);
+void homekit_server_deinit();
 
 // Reset HomeKit accessory server, removing all pairings
 void homekit_server_reset();

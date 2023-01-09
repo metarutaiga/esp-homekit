@@ -4553,6 +4553,16 @@ void homekit_server_init(homekit_server_config_t *config) {
     }
 }
 
+
+void homekit_server_deinit()
+{
+    if (server)
+    {
+        server_free(server);
+        server = NULL;
+    }
+}
+
 void homekit_server_reset() {
     homekit_storage_reset();
 }

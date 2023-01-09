@@ -20,7 +20,7 @@ void homekit_overclock_end();
 #include <osapi.h>
 #include <spi_flash.h>
 #define ESP_OK 0
-#define isdigit(c) (c >= '0' && c <= '9')
+#define isdigit(c) ((c) >= '0' && (c) <= '9')
 #define printf os_printf
 #define sprintf os_sprintf
 #define snprintf os_snprintf
