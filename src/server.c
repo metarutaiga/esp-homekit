@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #if defined(ESP_NONOS)
+#pragma clang diagnostic ignored "-Wint-conversion"
 #define __cplusplus
 #include <os_type.h>
 #undef __cplusplus
@@ -14,12 +15,37 @@
 #include <ip_addr.h>
 #include <espconn.h>
 typedef int SemaphoreHandle_t;
+#define pdPASS 0
+#define EAGAIN -1
+#define errno 0
+#define write(s, d, l) espconn_sent(s, d, l) < 0 ? -1 : 0
+#define close(s) espconn_disconnect(s)
+#define INET_ADDRSTRLEN 16
 #define xSemaphoreCreateBinary() 1
 #define xSemaphoreGive(...)
 #define xSemaphoreTake(...)
 #define vSemaphoreDelete(...)
+#define xTaskCreate(a, b, c, d, e, f) pdPASS) {} a(d); if (0
 #define vTaskDelete(...)
-#define close(...)
+#undef FD_CLR
+#undef FD_SET
+#undef FD_ZERO
+#define FD_CLR(s, fds) \
+    for (int i = 0; i < countof(*fds); ++i) { \
+        if ((*fds)[i] == s) { \
+            (*fds)[i] = NULL; \
+            break; \
+        } \
+    }
+#define FD_SET(s, fds) \
+    for (int i = 0; i < countof(*fds); ++i) { \
+        if ((*fds)[i] == NULL) { \
+            (*fds)[i] = s; \
+            break; \
+        } \
+    }
+#define FD_ZERO(fds) \
+    memset(*fds, 0, sizeof(*fds))
 #elif defined(ESP_IDF)
 #include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
@@ -151,8 +177,9 @@ typedef struct {
     bool paired;
     pairing_context_t *pairing_context;
 #if defined(ESP_NONOS)
-    struct espconn *listen_conn;
-    struct espconn *accept_conn[7];
+    struct espconn *listen_fd;
+    struct espconn *fds[HOMEKIT_MAX_CLIENTS];
+    struct espconn *max_fd;
 #else
     int listen_fd;
     fd_set fds;
@@ -212,9 +239,7 @@ struct _client_context_t {
 
     uint8_t id;
 #if defined(ESP_NONOS)
-    struct espconn *conn;
-    char* recv;
-    int recv_len;
+    struct espconn *socket;
 #else
     int socket;
 #endif
@@ -246,13 +271,9 @@ homekit_server_t *server_new() {
     if (!server) {
         return NULL;
     }
-#if defined(ESP_NONOS)
-    server->listen_conn = NULL;
-    memset(server->accept_conn, 0, sizeof(server->accept_conn));
-#else
+
     FD_ZERO(&server->fds);
     server->max_fd = 0;
-#endif
     server->client_count = 0;
     server->config = NULL;
     server->paired = false;
@@ -492,13 +513,6 @@ client_context_t *client_context_new() {
 
     c->server = NULL;
     c->id = 0;
-#if defined(ESP_NONOS)
-    c->conn = NULL;
-    c->recv = NULL;
-    c->recv_len = 0;
-#else
-    c->socket = -1;
-#endif
 
     c->pairing_id = -1;
     c->encrypted = false;
@@ -970,19 +984,12 @@ int client_send_plainv(
                 part_offset = 0;
             }
         }
-#if defined(ESP_NONOS)
-        int r = espconn_sent(context->conn, buffer, chunk_size);
-        if (r < 0) {
-            CLIENT_ERROR(context, "Failed to write response (errno %d)", r);
-            return -1;
-        }
-#else
+
         int r = write(context->socket, buffer, chunk_size);
         if (r == -1) {
             CLIENT_ERROR(context, "Failed to write response (errno %d)", errno);
             return -1;
         }
-#endif
     }
 
     return 0;
@@ -1044,19 +1051,12 @@ int client_send_encryptedv(
             CLIENT_ERROR(context, "Failed to chacha encrypt payload (code %d)", r);
             return -1;
         }
-#if defined(ESP_NONOS)
-        r = espconn_sent(context->conn, encrypted, available + 2);
-        if (r < 0) {
-            CLIENT_ERROR(context, "Failed to write response (errno %d)", r);
-            return -1;
-        }
-#else
+
         r = write(context->socket, encrypted, available + 2);
         if (r == -1) {
             CLIENT_ERROR(context, "Failed to write response (errno %d)", errno);
             return -1;
         }
-#endif
     }
 
     return 0;
@@ -1148,19 +1148,11 @@ void client_sendv(client_context_t *context, uint8_t n, const byte **data, size_
         client_send_encryptedv(context, n, data, data_sizes);
     } else {
         if (n == 1) {
-#if defined(ESP_NONOS)
-            int r = espconn_sent(context->conn, data[0], data_sizes[0]);
-            if (r < 0) {
-                CLIENT_ERROR(context, "Failed to send response (errno %d)", r);
-                return;
-            }
-#else
             int r = write(context->socket, data[0], data_sizes[0]);
             if (r < 0) {
                 CLIENT_ERROR(context, "Failed to send response (errno %d)", errno);
                 return;
             }
-#endif
         } else {
             client_send_plainv(context, n, data, data_sizes);
         }
@@ -1186,13 +1178,13 @@ void client_send_chunk(byte *data, size_t size, void *arg) {
 
 
 void send_204_response(client_context_t *context) {
-    static char response[] = "HTTP/1.1 204 No Content\r\n\r\n";
-    client_send(context, (byte *)response, sizeof(response)-1);
+    static const byte response[] = "HTTP/1.1 204 No Content\r\n\r\n";
+    client_send(context, response, sizeof(response)-1);
 }
 
 void send_404_response(client_context_t *context) {
-    static char response[] = "HTTP/1.1 404 Not Found\r\n\r\n";
-    client_send(context, (byte *)response, sizeof(response)-1);
+    static const byte response[] = "HTTP/1.1 404 Not Found\r\n\r\n";
+    client_send(context, response, sizeof(response)-1);
 }
 
 
@@ -1202,7 +1194,7 @@ typedef struct _client_event {
 } client_event_t;
 
 
-static byte tlv_200_response_headers[] =
+static const byte tlv_200_response_headers[] =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: application/pairing+tlv8\r\n"
     "Transfer-Encoding: chunked\r\n"
@@ -1234,14 +1226,14 @@ void send_tlv_error_response(client_context_t *context, int state, TLVError erro
 }
 
 
-static byte json_200_response_headers[] =
+static const byte json_200_response_headers[] =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: application/hap+json\r\n"
     "Transfer-Encoding: chunked\r\n"
     "Connection: keep-alive\r\n\r\n";
 
 
-static byte json_207_response_headers[] =
+static const byte json_207_response_headers[] =
     "HTTP/1.1 207 Multi-Status\r\n"
     "Content-Type: application/hap+json\r\n"
     "Transfer-Encoding: chunked\r\n"
@@ -3077,10 +3069,7 @@ static HAPStatus process_characteristics_update(client_context_t *context, const
                 size_t data_size = 0;
                 byte *data = base64_decode((unsigned char*)value, value_len, &data_size);
                 if (!data) {
-                    CLIENT_ERROR(context,
-                                 "Failed to update %d.%d: "
-                                 "error allocating %d bytes for Base64 decoding",
-                                 aid, iid, data_size);
+                    CLIENT_ERROR(context, "Failed to update %d.%d: error Base64 decoding", aid, iid);
                     return HAPStatus_InvalidValue;
                 }
 #else
@@ -3719,7 +3708,12 @@ static http_parser_settings homekit_http_parser_settings = {
 };
 
 
-static void homekit_client_process(client_context_t *context, char *data, unsigned short len) {
+#if defined(ESP_NONOS)
+static void homekit_client_process(struct espconn *s, char *data, unsigned short len) {
+    client_context_t *context = s->reverse;
+#else
+static void homekit_client_process(client_context_t *context) {
+#endif
     context->server->parser.data = context;
 
     size_t data_available = 0;
@@ -3736,6 +3730,7 @@ static void homekit_client_process(client_context_t *context, char *data, unsign
             context->server->data+data_available,
             sizeof(context->server->data)-data_available
         );
+#endif
         if (data_len == 0) {
             context->disconnect = true;
             return;
@@ -3749,7 +3744,7 @@ static void homekit_client_process(client_context_t *context, char *data, unsign
             }
             continue;
         }
-#endif
+
         CLIENT_DEBUG(context, "Got %d incoming data", data_len);
         byte *payload = (byte *)context->server->data;
         size_t payload_size = (size_t)data_len;
@@ -3795,13 +3790,16 @@ static void homekit_client_process(client_context_t *context, char *data, unsign
 }
 
 
-void homekit_server_close_client(homekit_server_t *server, client_context_t *context) {
 #if defined(ESP_NONOS)
-    char address_buffer[16];
-    sprintf(address_buffer, IPSTR, IP2STR(context->conn->proto.tcp->remote_ip));
-    espconn_disconnect(context->conn);
-    espconn_delete(context->conn);
+void homekit_server_close_client(struct espconn *s) {
+    client_context_t *context = s->reverse;
+    if (context == NULL)
+        return;
+    homekit_server_t *server = context->server;
+    char address_buffer[INET_ADDRSTRLEN];
+    sprintf(address_buffer, IPSTR, IP2STR(context->socket->proto.tcp->remote_ip));
 #else
+void homekit_server_close_client(homekit_server_t *server, client_context_t *context) {
     char address_buffer[INET_ADDRSTRLEN];
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -3810,17 +3808,18 @@ void homekit_server_close_client(homekit_server_t *server, client_context_t *con
     } else {
         strcpy(address_buffer, "?.?.?.?");
     }
-    FD_CLR(context->socket, &server->fds);
-    close(context->socket);
 #endif
     CLIENT_INFO(context, "Closing client connection from %s",address_buffer);
 
+    FD_CLR(context->socket, &server->fds);
     server->client_count--;
 
     bitset_clear(server->client_ids, context->id);
     for (uint16_t nid=0; nid < server->notify_count; nid++) {
         bitset_clear(server->subscriptions, nid * HOMEKIT_MAX_CLIENTS + context->id);
     }
+
+    close(context->socket);
 
     if (server->pairing_context && server->pairing_context->client == context) {
         pairing_context_free(server->pairing_context);
@@ -3834,7 +3833,9 @@ void homekit_server_close_client(homekit_server_t *server, client_context_t *con
 
 
 #if defined(ESP_NONOS)
-client_context_t *homekit_server_accept_client(homekit_server_t *server, struct espconn *conn) {
+client_context_t *homekit_server_accept_client(struct espconn *s) {
+    homekit_server_t *server = s->reverse;
+    s->reverse = NULL;
 #else
 client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     int s = accept(server->listen_fd, (struct sockaddr *)NULL, (socklen_t *)NULL);
@@ -3843,12 +3844,6 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
             return NULL;
 
         ERROR("Failed to accept connection (errno %d)", errno);
-        return NULL;
-    }
-
-    if (server->client_count >= HOMEKIT_MAX_CLIENTS) {
-        INFO("No more room for client connections (max %d)", HOMEKIT_MAX_CLIENTS);
-        close(s);
         return NULL;
     }
 
@@ -3867,6 +3862,12 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     const int maxpkt = 4; /* Drop connection after 4 probes without response */
     setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(maxpkt));
 #endif
+    if (server->client_count >= HOMEKIT_MAX_CLIENTS) {
+        INFO("No more room for client connections (max %d)", HOMEKIT_MAX_CLIENTS);
+        close(s);
+        return NULL;
+    }
+
     client_context_t *context = client_context_new();
     if (!context) {
         ERROR("Failed to allocate memory for client context");
@@ -3890,22 +3891,6 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
         return NULL;
     }
 
-#if defined(ESP_NONOS)
-    context->conn = conn;
-    server->client_count++;
-
-    char address_buffer[16];
-    sprintf(address_buffer, IPSTR, IP2STR(conn->proto.tcp->remote_ip));
-
-    CLIENT_INFO(context, "Got new client connection from %s", address_buffer);
-
-    client_context_t *c = server->clients;
-    while (c) {
-        sprintf(address_buffer, IPSTR, IP2STR(c->conn->proto.tcp->remote_ip));
-        CLIENT_INFO(c, " Have existing connection from %s %s", address_buffer, c->disconnect?"X":"");
-        c = c->next;
-    }
-#else
     context->socket = s;
     context->next = server->clients;
 
@@ -3916,7 +3901,13 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     DEBUG_HEAP();
 
     char address_buffer[INET_ADDRSTRLEN];
+#if defined(ESP_NONOS)
+    s->reverse = context;
+    espconn_regist_recvcb(s, homekit_client_process);
+    espconn_regist_disconcb(s, homekit_server_close_client);
 
+    sprintf(address_buffer, IPSTR, IP2STR(s->proto.tcp->remote_ip));
+#else
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     if (getpeername(s, (struct sockaddr *)&addr, &addr_len) == 0) {
@@ -3924,21 +3915,23 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     } else {
         strcpy(address_buffer, "?.?.?.?");
     }
-
+#endif
     CLIENT_INFO(context, "Got new client connection from %s", address_buffer);
-
 
     client_context_t *c = server->clients;
     while (c) {
+#if defined(ESP_NONOS)
+        sprintf(address_buffer, IPSTR, IP2STR(c->socket->proto.tcp->remote_ip));
+#else
         if (getpeername(c->socket, (struct sockaddr *)&addr, &addr_len) == 0) {
             inet_ntop(AF_INET, &addr.sin_addr, address_buffer, sizeof(address_buffer));
         } else {
             strcpy(address_buffer, "?.?.?.?");
         }
+#endif
         CLIENT_INFO(c, " Have existing connection from %s %s", address_buffer, c->disconnect?"X":"");
         c = c->next;
     }
-#endif
 
     server->clients = context;
 
@@ -4011,7 +4004,7 @@ void homekit_server_process_notifications(homekit_server_t *server) {
                 CLIENT_DEBUG(context, "Sending EVENT");
                 DEBUG_HEAP();
 
-                static byte http_headers[] =
+                static const byte http_headers[] =
                     "EVENT/1.0 200 OK\r\n"
                     "Content-Type: application/hap+json\r\n"
                     "Transfer-Encoding: chunked\r\n\r\n";
@@ -4055,11 +4048,14 @@ void homekit_server_process_notifications(homekit_server_t *server) {
 }
 
 
-void homekit_server_close_clients(homekit_server_t *server) {
 #if defined(ESP_NONOS)
+void homekit_server_close_clients(struct espconn *s) {
+    homekit_server_t *server = s->reverse;
 #else
-    int max_fd = server->listen_fd;
+void homekit_server_close_clients(homekit_server_t *server) {
 #endif
+    int max_fd = server->listen_fd;
+
     client_context_t head;
     head.next = server->clients;
 
@@ -4069,22 +4065,21 @@ void homekit_server_close_clients(homekit_server_t *server) {
 
         if (tmp->disconnect) {
             context->next = tmp->next;
-            homekit_server_close_client(server, tmp);
-        } else {
 #if defined(ESP_NONOS)
+            homekit_server_close_client(tmp->socket);
 #else
+            homekit_server_close_client(server, tmp);
+#endif
+        } else {
             if (tmp->socket > max_fd)
                 max_fd = tmp->socket;
-#endif
+
             context = tmp;
         }
     }
 
     server->clients = head.next;
-#if defined(ESP_NONOS)
-#else
     server->max_fd = max_fd;
-#endif
 }
 
 
@@ -4092,6 +4087,17 @@ static void homekit_run_server(homekit_server_t *server)
 {
     DEBUG("Starting HTTP server");
 #if defined(ESP_NONOS)
+    static struct espconn esp_conn;
+    static esp_tcp esptcp;
+
+    esp_conn.type = ESPCONN_TCP;
+    esp_conn.state = ESPCONN_NONE;
+    esp_conn.proto.tcp = &esptcp;
+    esp_conn.proto.tcp->local_port = PORT;
+    esp_conn.reverse = server;
+    espconn_regist_connectcb(&esp_conn, homekit_server_accept_client);
+    espconn_regist_disconcb(&esp_conn, homekit_server_close_clients);
+    espconn_accept(&esp_conn);
 #else
     struct sockaddr_in serv_addr;
     server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -4232,12 +4238,10 @@ void homekit_setup_mdns(homekit_server_t *server) {
 #ifdef USE_WOLFSSL
             wc_Sha512Hash((const unsigned char *)data, data_size-1, shaHash);
 #else
-            size_t len = data - 1;
+            size_t len = data_size-1;
             sha512_vector(1, &data, &len, shaHash);
 #endif
-
             free(data);
-
 #if defined(ESP_NONOS)
             size_t encodedHash_len = 0;
             char *encodedHash = base64_encode_no_lf(shaHash, 4, &encodedHash_len);
@@ -4540,15 +4544,13 @@ void homekit_server_init(homekit_server_config_t *config) {
         server = NULL;
         return;
     }
-#if defined(ESP_NONOS)
-#else
+
     if (pdPASS != xTaskCreate(homekit_server_task, "HomeKit Server",
                               SERVER_TASK_STACK, server, 1, NULL)) {
         ERROR("Error initializing HomeKit accessory server: "
               "failed to start a server task");
         server_free(server);
     }
-#endif
 }
 
 void homekit_server_reset() {

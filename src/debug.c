@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "debug.h"
+#include "port.h"
 
 
 char *data_to_string(const byte *data, size_t size) {

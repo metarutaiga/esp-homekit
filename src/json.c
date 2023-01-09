@@ -4,6 +4,7 @@
 #include <string.h>
 #include "json.h"
 #include "debug.h"
+#include "port.h"
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 

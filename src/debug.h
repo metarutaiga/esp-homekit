@@ -6,6 +6,7 @@
 
 typedef unsigned char byte;
 
+#define HOMEKIT_DEBUG 1
 #ifdef HOMEKIT_DEBUG
 
 #define DEBUG(message, ...) printf(">>> %s: " message "\n", __func__, ##__VA_ARGS__)
@@ -19,7 +20,11 @@ typedef unsigned char byte;
 #define INFO(message, ...) printf(">>> HomeKit: " message "\n", ##__VA_ARGS__)
 #define ERROR(message, ...) printf("!!! HomeKit: " message "\n", ##__VA_ARGS__)
 
-#ifdef ESP_IDF
+#if defined(ESP_NONOS)
+
+#define DEBUG_HEAP() DEBUG("Free heap: %d", system_get_free_heap_size());
+
+#elif defined(ESP_IDF)
 
 #define DEBUG_HEAP() DEBUG("Free heap: %d", esp_get_free_heap_size());
 

@@ -15,8 +15,17 @@ void homekit_overclock_end();
 #define __cplusplus
 #include <os_type.h>
 #undef __cplusplus
+#undef isdigit
+#undef toupper
+#include <osapi.h>
 #include <spi_flash.h>
 #define ESP_OK 0
+#define isdigit(c) (c >= '0' && c <= '9')
+#define printf os_printf
+#define sprintf os_sprintf
+#define snprintf os_snprintf
+#define toupper(c) ((c >= 'a' && c <= 'z') ? (c - 0x20) : c)
+#define SPIFLASH_BASE_ADDR 0x100000
 #define SPI_FLASH_SECTOR_SIZE SPI_FLASH_SEC_SIZE
 #define spiflash_read(addr, buffer, size) (spi_flash_read((addr), (buffer), (size)) == ESP_OK)
 #define spiflash_write(addr, data, size) (spi_flash_write((addr), (data), (size)) == ESP_OK)
