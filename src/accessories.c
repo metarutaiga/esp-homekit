@@ -349,13 +349,14 @@ homekit_service_t* homekit_service_clone(homekit_service_t* service) {
     }
 
     if (service->characteristics) {
-        clone->characteristics = (homekit_characteristic_t**) p;
+        homekit_characteristic_t** characteristics = (homekit_characteristic_t**) p;
         int i = 0;
         while (service->characteristics[i]) {
-            clone->characteristics[i] = service->characteristics[i];
+            characteristics[i] = service->characteristics[i];
             i++;
         }
-        clone->characteristics[i] = NULL;
+        characteristics[i] = NULL;
+        clone->characteristics = characteristics;
         p += (i + 1) * sizeof(homekit_characteristic_t*);
     }
 
@@ -380,14 +381,14 @@ homekit_accessory_t* homekit_accessory_clone(homekit_accessory_t* ac) {
     clone->config_number = ac->config_number;
 
     if (ac->services) {
-        clone->services = (homekit_service_t**) p;
+        homekit_service_t** services = (homekit_service_t**) p;
         int i = 0;
         while (ac->services[i]) {
-            clone->services[i] = ac->services[i];
+            services[i] = ac->services[i];
             i++;
         }
-        clone->services[i] = NULL;
-
+        services[i] = NULL;
+        clone->services = services;
         p += sizeof(homekit_service_t*) * (i + 1);
     }
 

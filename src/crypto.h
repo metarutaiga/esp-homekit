@@ -9,10 +9,20 @@
 #include <wolfssl/wolfcrypt/ed25519.h>
 #include <wolfssl/wolfcrypt/curve25519.h>
 #else
-int sha512_vector(size_t num_elem, const uint8_t *addr[], const size_t *len, uint8_t *mac);
 #define SHA512_DIGEST_SIZE 64
-typedef int curve25519_key;
-typedef int ed25519_key;
+int sha512_vector(size_t num_elem, const uint8_t *addr[], const size_t *len, uint8_t *mac);
+#define CURVE25519_KEYSIZE 32
+typedef struct curve25519_key {
+    uint8_t p[CURVE25519_KEYSIZE];
+    uint8_t k[CURVE25519_KEYSIZE];
+} curve25519_key;
+#define ED25519_PUBLIC_KEYSIZE 32
+#define ED25519_SECRET_KEYSIZE 64
+#define ED25519_SIGN_KEYSIZE 64
+typedef struct ed25519_key {
+    uint8_t p[ED25519_PUBLIC_KEYSIZE];
+    uint8_t k[ED25519_SECRET_KEYSIZE];
+} ed25519_key;
 #endif
 
 typedef unsigned char byte;
