@@ -11,6 +11,8 @@ void homekit_overclock_start();
 void homekit_overclock_end();
 
 #ifdef ESP_NONOS
+#define HOMEKIT_OVERCLOCK_PAIR_SETUP
+#define HOMEKIT_OVERCLOCK_PAIR_VERIFY
 #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
 #define __cplusplus
 #include <os_type.h>

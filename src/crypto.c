@@ -18,8 +18,10 @@ typedef uint64_t u64;
 #include <errno.h>
 #include <crypto/sha512.h>
 #include <crypto/sha512_i.h>
+#include <crypto/chacha/chacha.h>
 #include <crypto/tls/bignum.h>
 #include <crypto/tweetnacl/tweetnacl.h>
+#define CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE 16
 #define SHA512_DIGEST_SIZE 64
 #define SRP_MODULUS_MIN_BITS 512
 #define SRP_PRIVATE_KEY_MIN_BITS 256
@@ -604,7 +606,6 @@ int crypto_chacha20poly1305_decrypt(
     const byte *message, size_t message_size,
     byte *decrypted, size_t *decrypted_size
 ) {
-#ifdef USE_WOLFSSL
     if (message_size <= CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE) {
         DEBUG("Decrypted message is too small");
         return -2;
@@ -620,17 +621,44 @@ int crypto_chacha20poly1305_decrypt(
     }
 
     *decrypted_size = len;
-
+#ifdef USE_WOLFSSL
     int r = wc_ChaCha20Poly1305_Decrypt(
         key, nonce, aad, aad_size,
         message, len, &message[len],
         decrypted
     );
-
-    return r;
 #else
-    return 0;
+    ECRYPT_ctx ctx;
+    ECRYPT_keysetup(&ctx, key, 256);
+    ECRYPT_ivsetup(&ctx, nonce, 96);
+
+    byte poly1305Key[32];
+    ECRYPT_decrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
+
+    size_t size = 0;
+    size += (aad_size + 15) & ~15;
+    size += (len + 15) & ~15;
+    size += 8;
+    size += 8;
+    byte* data[size];
+    memset(data, 0, size);
+
+    size_t pos = 0;
+    memcpy(data + pos, aad, aad_size);
+    pos += (aad_size + 15) & ~15;
+    memcpy(data + pos, message, len);
+    pos += (len + 15) & ~15;
+    memcpy(data + pos, &aad_size, 4);
+    pos += 8;
+    memcpy(data + pos, &len, 4);
+    pos += 8;
+
+    int r = crypto_onetimeauth_poly1305_tweet_verify(message + len, data, size, poly1305Key);
+    if (r == 0) {
+        ECRYPT_decrypt_bytes(&ctx, decrypted, message, len);
+    }
 #endif
+    return r;
 }
 
 int crypto_chacha20poly1305_encrypt(
@@ -638,7 +666,6 @@ int crypto_chacha20poly1305_encrypt(
     const byte *message, size_t message_size,
     byte *encrypted, size_t *encrypted_size
 ) {
-#ifdef USE_WOLFSSL
     if (encrypted_size == NULL)
         return -1;
 
@@ -649,17 +676,42 @@ int crypto_chacha20poly1305_encrypt(
     }
 
     *encrypted_size = len;
-
+#ifdef USE_WOLFSSL
     int r = wc_ChaCha20Poly1305_Encrypt(
         key, nonce, aad, aad_size,
         message, message_size,
         encrypted, encrypted+message_size
     );
-
-    return r;
 #else
-    return 0;
+    ECRYPT_ctx ctx;
+    ECRYPT_keysetup(&ctx, key, 256);
+    ECRYPT_ivsetup(&ctx, nonce, 96);
+
+    byte poly1305Key[32];
+    ECRYPT_encrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
+    ECRYPT_encrypt_bytes(&ctx, encrypted, message, message_size);
+
+    size_t size = 0;
+    size += (aad_size + 15) & ~15;
+    size += (message_size + 15) & ~15;
+    size += 8;
+    size += 8;
+    byte* data[size];
+    memset(data, 0, size);
+
+    size_t pos = 0;
+    memcpy(data + pos, aad, aad_size);
+    pos += (aad_size + 15) & ~15;
+    memcpy(data + pos, message, message_size);
+    pos += (message_size + 15) & ~15;
+    memcpy(data + pos, &aad_size, 4);
+    pos += 8;
+    memcpy(data + pos, &message_size, 4);
+    pos += 8;
+
+    int r = crypto_onetimeauth_poly1305_tweet(encrypted + message_size, data, size, poly1305Key);
 #endif
+    return r;
 }
 
 

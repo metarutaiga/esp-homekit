@@ -15,10 +15,23 @@
 #include <ip_addr.h>
 #include <espconn.h>
 typedef int SemaphoreHandle_t;
+static sint8 espconn_sent_force(struct espconn *espconn, uint8 *psent, uint16 length) {
+    extern uint32_t system_get_time_ms();
+    uint32_t start = system_get_time_ms();
+    for (;;) {
+        if (espconn_sent(espconn, psent, length) == 0)
+            return 0;
+        extern void delay(unsigned int ms);
+        delay(0);
+        if (system_get_time_ms() - start > 1000)
+            break;
+    }
+    return -1;
+}
 #define pdPASS 0
 #define EAGAIN -1
 #define errno 0
-#define write(s, d, l) espconn_sent(s, d, l) < 0 ? -1 : 0
+#define write(s, d, l) espconn_sent_force(s, d, l) < 0 ? -1 : 0
 #define close(s) espconn_disconnect(s)
 #define INET_ADDRSTRLEN 16
 #define xSemaphoreCreateBinary() 1
@@ -3794,6 +3807,8 @@ static void homekit_client_process(client_context_t *context) {
 void homekit_server_close_client(struct espconn *s) {
     client_context_t *context = s->reverse;
     homekit_server_t *server = context->server;
+    if (server == NULL)
+        return;
     char address_buffer[INET_ADDRSTRLEN];
     sprintf(address_buffer, IPSTR, IP2STR(context->socket->proto.tcp->remote_ip));
 #else

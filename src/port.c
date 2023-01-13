@@ -2,11 +2,13 @@
 
 #ifdef ESP_NONOS
 
+#include <stdio.h>
 #define __cplusplus
 #include <os_type.h>
 #undef __cplusplus
 #include <osapi.h>
 #include <user_interface.h>
+#include <espconn.h>
 
 uint32_t homekit_random() {
     return os_random();
@@ -21,27 +23,55 @@ void homekit_system_restart() {
 }
 
 void homekit_overclock_start() {
-    
+    CLEAR_PERI_REG_MASK(0x60000900, BIT0);
+    SET_PERI_REG_MASK(0x3FF00014, BIT0);
+    system_soft_wdt_stop();
+    ets_intr_unlock();
 }
 
 void homekit_overclock_end() {
-    
+    SET_PERI_REG_MASK(0x60000900, BIT0);
+    CLEAR_PERI_REG_MASK(0x3FF00014, BIT0);
+    system_soft_wdt_restart();
+    ets_intr_lock();
 }
+
+static struct mdns_info info;
 
 void homekit_mdns_init() {
     
 }
 
 void homekit_mdns_configure_init(const char *instance_name, int port) {
-    
+    struct ip_info ip_info = {};
+    wifi_get_ip_info(STATION_IF, &ip_info);
+
+    info.host_name = (char*)instance_name;
+    info.server_name = (char*)"hap";
+    info.server_port = port;
+    info.ipAddr = ip_info.ip.addr;
 }
 
 void homekit_mdns_add_txt(const char *key, const char *format, ...) {
-    
+    extern int ets_vsprintf(char *str, const char *format, va_list arg);
+    for (int i = 0; i < 10; ++i) {
+        if (info.txt_data[i] == NULL) {
+            char buffer[128];
+            int pos = os_sprintf(buffer, "%s=", key);
+
+            va_list arg;
+            va_start(arg, format);
+            ets_vsprintf(buffer + pos, format, arg);
+            va_end(arg);
+
+            info.txt_data[i] = strdup(buffer);
+            break;
+        }
+    }
 }
 
 void homekit_mdns_configure_finalize() {
-    
+    espconn_mdns_init(&info);
 }
 
 #endif
