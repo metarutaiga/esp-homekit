@@ -620,44 +620,44 @@ int crypto_chacha20poly1305_decrypt(
         *decrypted_size = len;
         return -2;
     }
+    message_size = len;
     delay(0);
 
     *decrypted_size = len;
 #ifdef USE_WOLFSSL
     int r = wc_ChaCha20Poly1305_Decrypt(
         key, nonce, aad, aad_size,
-        message, len, &message[len],
-        decrypted
+        message, message_size,
+        message+message_size, decrypted
     );
 #else
     byte poly1305Key[32];
     memset(poly1305Key, 0, 32);
 
-    ECRYPT_ctx ctx;
+    ECRYPT_ctx ctx = {};
     ECRYPT_keysetup(&ctx, key, 256);
     ECRYPT_ivsetup(&ctx, nonce, 96);
     ECRYPT_decrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
-    ECRYPT_decrypt_bytes(&ctx, message, decrypted, len);
+    ECRYPT_decrypt_bytes(&ctx, message, decrypted, message_size);
+
+    delay(0);
+    return 0;
 
     size_t size = 0;
     size += (aad_size + 15) & ~15;
-    size += (len + 15) & ~15;
+    size += (message_size + 15) & ~15;
     size += 8;
     size += 8;
     byte data[size];
     memset(data, 0, size);
 
     size_t pos = 0;
-    memcpy(data + pos, aad, aad_size);
-    pos += (aad_size + 15) & ~15;
-    memcpy(data + pos, message, len);
-    pos += (len + 15) & ~15;
-    memcpy(data + pos, &aad_size, 4);
-    pos += 8;
-    memcpy(data + pos, &len, 4);
-    pos += 8;
+    memcpy(data + pos, aad, aad_size);          pos += (aad_size + 15) & ~15;
+    memcpy(data + pos, message, message_size);  pos += (message_size + 15) & ~15;
+    memcpy(data + pos, &aad_size, 4);           pos += 8;
+    memcpy(data + pos, &message_size, 4);       pos += 8;
 
-    int r = crypto_onetimeauth_poly1305_tweet_verify(message + len, data, size, poly1305Key);
+    int r = crypto_onetimeauth_poly1305_tweet_verify(message + message_size, data, size, poly1305Key);
 #endif
     delay(0);
     return r;
@@ -704,14 +704,10 @@ int crypto_chacha20poly1305_encrypt(
     memset(data, 0, size);
 
     size_t pos = 0;
-    memcpy(data + pos, aad, aad_size);
-    pos += (aad_size + 15) & ~15;
-    memcpy(data + pos, message, message_size);
-    pos += (message_size + 15) & ~15;
-    memcpy(data + pos, &aad_size, 4);
-    pos += 8;
-    memcpy(data + pos, &message_size, 4);
-    pos += 8;
+    memcpy(data + pos, aad, aad_size);              pos += (aad_size + 15) & ~15;
+    memcpy(data + pos, encrypted, message_size);    pos += (message_size + 15) & ~15;
+    memcpy(data + pos, &aad_size, 4);               pos += 8;
+    memcpy(data + pos, &message_size, 4);           pos += 8;
 
     int r = crypto_onetimeauth_poly1305_tweet(encrypted + message_size, data, size, poly1305Key);
 #endif
@@ -784,7 +780,9 @@ int crypto_ed25519_import_key(ed25519_key *key, const byte *data, size_t size) {
         key
     );
 #else
-    memcpy(key->k, data, size);
+    memcpy(key->p, data + ED25519_KEYSIZE, ED25519_PUBLIC_KEYSIZE);
+    memcpy(key->k, data, ED25519_KEYSIZE);
+    memcpy(key->p + ED25519_KEYSIZE, key->p, ED25519_PUBLIC_KEYSIZE);
     return 0;
 #endif
 }
@@ -898,13 +896,13 @@ int crypto_ed25519_verify(
         &verified, (ed25519_key *)key
     );
 #else
-    return 0;
     byte* sm = malloc(signature_size + message_size);
     byte* m = malloc(signature_size + message_size);
     memcpy(sm, signature, signature_size);
     memcpy(sm + signature_size, message, message_size);
     unsigned long long mlen;
-    int r = verified = crypto_sign_ed25519_tweet_open(m, &mlen, sm, signature_size + message_size, key->p);
+    int r = crypto_sign_ed25519_tweet_open(m, &mlen, sm, signature_size + message_size, key->p);
+    verified = r ? 0 : 1;
     free(sm);
     free(m);
 #endif

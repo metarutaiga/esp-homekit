@@ -16,6 +16,7 @@ typedef struct curve25519_key {
     uint8_t p[CURVE25519_KEYSIZE];
     uint8_t k[CURVE25519_KEYSIZE];
 } curve25519_key;
+#define ED25519_KEYSIZE 32
 #define ED25519_PUBLIC_KEYSIZE 32
 #define ED25519_SECRET_KEYSIZE 64
 #define ED25519_SIGN_KEYSIZE 64
