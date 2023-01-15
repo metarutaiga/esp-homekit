@@ -11,6 +11,7 @@ void homekit_overclock_start();
 void homekit_overclock_end();
 
 #ifdef ESP_NONOS
+extern void delay(unsigned int ms);
 #define HOMEKIT_OVERCLOCK_PAIR_SETUP
 #define HOMEKIT_OVERCLOCK_PAIR_VERIFY
 #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
@@ -21,11 +22,12 @@ void homekit_overclock_end();
 #undef toupper
 #include <osapi.h>
 #include <spi_flash.h>
+#include <nanoprintf/nanoprintf.h>
 #define ESP_OK 0
 #define isdigit(c) ((c) >= '0' && (c) <= '9')
 #define printf os_printf
 #define sprintf os_sprintf
-#define snprintf os_snprintf
+#define snprintf(a, b, c, ...) npf_snprintf(a, b, strncmp(c, "%1.1", 4) == 0 ? "%f" : c, ## __VA_ARGS__)
 #define toupper(c) ((c >= 'a' && c <= 'z') ? (c - 0x20) : c)
 #define HOMEKIT_SHORT_APPLE_UUIDS
 #define SPIFLASH_BASE_ADDR 0x100000

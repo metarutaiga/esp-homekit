@@ -19,6 +19,8 @@ static sint8 espconn_sent_force(struct espconn *espconn, uint8 *psent, uint16 le
     extern uint32_t system_get_time_ms();
     uint32_t start = system_get_time_ms();
     for (;;) {
+        if (espconn == NULL)
+            break;
         if (espconn_sent(espconn, psent, length) == 0)
             return 0;
         extern void delay(unsigned int ms);
@@ -1257,7 +1259,7 @@ void send_json_response(client_context_t *context, int status_code, byte *payloa
     CLIENT_DEBUG(context, "Sending JSON response");
     DEBUG_HEAP();
 
-    static char *http_headers =
+    static const byte http_headers[] =
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: application/hap+json\r\n"
         "Content-Length: %d\r\n"
@@ -3147,7 +3149,7 @@ void homekit_server_on_update_characteristics(client_context_t *context, const b
     CLIENT_INFO(context, "Update Characteristics");
     DEBUG_HEAP();
 
-    cJSON *json = cJSON_Parse((char *)data);
+    cJSON *json = cJSON_ParseWithLength((char *)data, size);
 
     if (!json) {
         CLIENT_ERROR(context, "Failed to parse request JSON");
@@ -3722,8 +3724,30 @@ static http_parser_settings homekit_http_parser_settings = {
 
 
 #if defined(ESP_NONOS)
-static void homekit_client_process(struct espconn *s, char *data, unsigned short len) {
-    client_context_t *context = s->reverse;
+typedef struct ReadMessage {
+    struct ReadMessage *next;
+    client_context_t *context;
+    char *data;
+    unsigned short len;
+} ReadMessage;
+static ReadMessage *head;
+static ReadMessage *tail;
+static void homekit_client_process_hint(struct espconn *s, char *data, unsigned short len) {
+    ReadMessage *msg = malloc(sizeof(ReadMessage));
+    msg->next = NULL;
+    msg->context = s->reverse;
+    msg->data = malloc(len);
+    msg->len = len;
+    memcpy(msg->data, data, len);
+    if (head == NULL) {
+        head = msg;
+    }
+    if (tail) {
+        tail->next = msg;
+    }
+    tail = msg;
+}
+static void homekit_client_process(client_context_t *context, char *data, unsigned short len) {
 #else
 static void homekit_client_process(client_context_t *context) {
 #endif
@@ -3804,25 +3828,29 @@ static void homekit_client_process(client_context_t *context) {
 
 
 #if defined(ESP_NONOS)
-void homekit_server_close_client(struct espconn *s) {
+void homekit_server_close_client_hint(struct espconn *s) {
     client_context_t *context = s->reverse;
-    homekit_server_t *server = context->server;
-    if (server == NULL)
+    if (context == NULL)
         return;
+    FD_CLR(context->socket, &server->fds);
+    context->socket = NULL;
+    context->disconnect = true;
+}
+void homekit_server_close_client(homekit_server_t *server, client_context_t *context) {
     char address_buffer[INET_ADDRSTRLEN];
-    sprintf(address_buffer, IPSTR, IP2STR(context->socket->proto.tcp->remote_ip));
+    if (context->socket) {
+        sprintf(address_buffer, IPSTR, IP2STR(context->socket->proto.tcp->remote_ip));
 #else
-void homekit_server_close_client(client_context_t *context) {
-    homekit_server_t *server = context->server;
+void homekit_server_close_client(homekit_server_t *server, client_context_t *context) {
     char address_buffer[INET_ADDRSTRLEN];
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     if (getpeername(context->socket, (struct sockaddr *)&addr, &addr_len) == 0) {
         inet_ntop(AF_INET, &addr.sin_addr, address_buffer, sizeof(address_buffer));
+#endif
     } else {
         strcpy(address_buffer, "?.?.?.?");
     }
-#endif
     CLIENT_INFO(context, "Closing client connection from %s",address_buffer);
 
     FD_CLR(context->socket, &server->fds);
@@ -3848,7 +3876,6 @@ void homekit_server_close_client(client_context_t *context) {
 
 #if defined(ESP_NONOS)
 client_context_t *homekit_server_accept_client(struct espconn *s) {
-    homekit_server_t *server = s->reverse;
     s->reverse = NULL;
 #else
 client_context_t *homekit_server_accept_client(homekit_server_t *server) {
@@ -3917,8 +3944,9 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     char address_buffer[INET_ADDRSTRLEN];
 #if defined(ESP_NONOS)
     s->reverse = context;
-    espconn_regist_recvcb(s, homekit_client_process);
-    espconn_regist_disconcb(s, homekit_server_close_client);
+    espconn_regist_recvcb(s, homekit_client_process_hint);
+    espconn_regist_disconcb(s, homekit_server_close_client_hint);
+    espconn_regist_time(s, 120, 1);
 
     sprintf(address_buffer, IPSTR, IP2STR(s->proto.tcp->remote_ip));
 #else
@@ -3935,14 +3963,15 @@ client_context_t *homekit_server_accept_client(homekit_server_t *server) {
     client_context_t *c = server->clients;
     while (c) {
 #if defined(ESP_NONOS)
-        sprintf(address_buffer, IPSTR, IP2STR(c->socket->proto.tcp->remote_ip));
+        if (c->socket) {
+            sprintf(address_buffer, IPSTR, IP2STR(c->socket->proto.tcp->remote_ip));
 #else
         if (getpeername(c->socket, (struct sockaddr *)&addr, &addr_len) == 0) {
             inet_ntop(AF_INET, &addr.sin_addr, address_buffer, sizeof(address_buffer));
+#endif
         } else {
             strcpy(address_buffer, "?.?.?.?");
         }
-#endif
         CLIENT_INFO(c, " Have existing connection from %s %s", address_buffer, c->disconnect?"X":"");
         c = c->next;
     }
@@ -4062,12 +4091,7 @@ void homekit_server_process_notifications(homekit_server_t *server) {
 }
 
 
-#if defined(ESP_NONOS)
-void homekit_server_close_clients(struct espconn *s) {
-    homekit_server_t *server = s->reverse;
-#else
 void homekit_server_close_clients(homekit_server_t *server) {
-#endif
     int max_fd = server->listen_fd;
 
     client_context_t head;
@@ -4079,7 +4103,7 @@ void homekit_server_close_clients(homekit_server_t *server) {
 
         if (tmp->disconnect) {
             context->next = tmp->next;
-            homekit_server_close_client(tmp->socket);
+            homekit_server_close_client(server, tmp);
         } else {
             if (tmp->socket > max_fd)
                 max_fd = tmp->socket;
@@ -4093,10 +4117,27 @@ void homekit_server_close_clients(homekit_server_t *server) {
 }
 
 
+#if defined(ESP_NONOS)
+static void homekit_run_server_loop(void *arg)
+{
+    if (current_client_context)
+        return;
+
+    while (head) {
+        homekit_client_process(head->context, head->data, head->len);
+        ReadMessage* next = head->next;
+        free(head->data);
+        free(head);
+        if (tail == head)
+            tail = NULL;
+        head = next;
+    }
+    homekit_server_close_clients(server);
+    homekit_server_process_notifications(server);
+}
 static void homekit_run_server(homekit_server_t *server)
 {
     DEBUG("Starting HTTP server");
-#if defined(ESP_NONOS)
     static struct espconn esp_conn;
     static esp_tcp esptcp;
 
@@ -4106,9 +4147,17 @@ static void homekit_run_server(homekit_server_t *server)
     esp_conn.proto.tcp->local_port = PORT;
     esp_conn.reverse = server;
     espconn_regist_connectcb(&esp_conn, homekit_server_accept_client);
-    espconn_regist_disconcb(&esp_conn, homekit_server_close_clients);
+    espconn_set_opt(&esp_conn, ESPCONN_NODELAY | ESPCONN_KEEPALIVE);
     espconn_accept(&esp_conn);
+    espconn_regist_time(&esp_conn, 120, 0);
+
+    static os_timer_t timer IRAM_ATTR;
+    os_timer_setfn(&timer, homekit_run_server_loop, &timer);
+    os_timer_arm(&timer, 100, true);
 #else
+static void homekit_run_server(homekit_server_t *server)
+{
+    DEBUG("Starting HTTP server");
     struct sockaddr_in serv_addr;
     server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server->listen_fd < 0) {

@@ -2,7 +2,7 @@
 
 #ifdef USE_WOLFSSL
 // #include "user_settings.h"
-#include <wolfssl/ssl.h>
+// #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/ed25519.h>
 #include <wolfssl/wolfcrypt/curve25519.h>
@@ -15,6 +15,7 @@ typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
+#include <stdio.h>
 #include <errno.h>
 #include <crypto/sha512.h>
 #include <crypto/sha512_i.h>
@@ -38,11 +39,11 @@ typedef struct _Srp {
     uint8_t            *salt;
     uint32_t            saltSz;
 } Srp;
+#include "crypto.h"
 #endif
 
 #include "port.h"
 #include "debug.h"
-#include "crypto.h"
 
 
 // 3072-bit group N (per RFC5054, Appendix A)
@@ -236,15 +237,15 @@ int crypto_srp_init(Srp *srp, const char *username, const char *password) {
     if (bignum_set_unsigned_bin(srp->N, N, sizeof(N)) != 0)
         return EINVAL;
 
-    if (bignum_get_unsigned_bin_len(srp->N) < SRP_MODULUS_MIN_BITS)
-        return EINVAL;
+//  if (bignum_get_unsigned_bin_len(srp->N) < SRP_MODULUS_MIN_BITS)
+//      return EINVAL;
 
     /* Set g */
     if (bignum_set_unsigned_bin(srp->g, g, sizeof(g)) != 0)
         return EINVAL;
 
-    if (bignum_cmp(srp->N, srp->g) != 1)
-        return EINVAL;
+//  if (bignum_cmp(srp->N, srp->g) != 1)
+//      return EINVAL;
 
     /* Set salt */
     srp->salt = malloc(sizeof(salt));
@@ -396,6 +397,7 @@ int crypto_srp_get_public_key(Srp *srp, byte *buffer, size_t *buffer_size) {
     bignum_deinit(j);
 
     /* extract public key to buffer */
+    memset(buffer, 0, 384);
     if (!r) r = bignum_get_unsigned_bin(pubkey, buffer, buffer_size);
     bignum_deinit(pubkey);
 #endif
@@ -417,16 +419,13 @@ int crypto_srp_compute_key(
 #else
     /* initializing variables */
 
-    byte *secret;
     size_t secretSz = bignum_get_unsigned_bin_len(srp->N);
-    if ((secret = malloc(secretSz)) == NULL)
-        return ENOMEM;
-
+    byte *secret = malloc(secretSz);
     struct bignum *u = bignum_init();
     struct bignum *s = bignum_init();
     struct bignum *temp1 = bignum_init();
     struct bignum *temp2 = bignum_init();
-    if (u == NULL || s == NULL || temp1 == NULL || temp2 == NULL) {
+    if (secret == NULL || u == NULL || s == NULL || temp1 == NULL || temp2 == NULL) {
         free(secret);
         bignum_deinit(u);
         bignum_deinit(s);
@@ -495,10 +494,10 @@ int crypto_srp_compute_key(
     if (!r) r = sha512_process(&srp->server_proof, client_public_key, client_public_key_size);
 
     free(secret);
-    bignum_deinit(&u);
-    bignum_deinit(&s);
-    bignum_deinit(&temp1);
-    bignum_deinit(&temp2);
+    bignum_deinit(u);
+    bignum_deinit(s);
+    bignum_deinit(temp1);
+    bignum_deinit(temp2);
 #endif
     if (r) {
         DEBUG("Failed to generate SRP shared secret key (code %d)", r);
@@ -579,7 +578,9 @@ int crypto_hkdf(
         output, *output_size
     );
 #else
-    int r = hmac_sha512_kdf(key, key_size, salt, info, info_size, output, 32);
+    byte prk[SHA512_DIGEST_SIZE];
+    hmac_sha512_vector(salt, salt_size, 1, &key, &key_size, prk);
+    int r = hmac_sha512_kdf(prk, SHA512_DIGEST_SIZE, NULL, info, info_size, output, 32);
 #endif
 
     return r;
@@ -619,6 +620,7 @@ int crypto_chacha20poly1305_decrypt(
         *decrypted_size = len;
         return -2;
     }
+    delay(0);
 
     *decrypted_size = len;
 #ifdef USE_WOLFSSL
@@ -628,19 +630,21 @@ int crypto_chacha20poly1305_decrypt(
         decrypted
     );
 #else
+    byte poly1305Key[32];
+    memset(poly1305Key, 0, 32);
+
     ECRYPT_ctx ctx;
     ECRYPT_keysetup(&ctx, key, 256);
     ECRYPT_ivsetup(&ctx, nonce, 96);
-
-    byte poly1305Key[32];
     ECRYPT_decrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
+    ECRYPT_decrypt_bytes(&ctx, message, decrypted, len);
 
     size_t size = 0;
     size += (aad_size + 15) & ~15;
     size += (len + 15) & ~15;
     size += 8;
     size += 8;
-    byte* data[size];
+    byte data[size];
     memset(data, 0, size);
 
     size_t pos = 0;
@@ -654,10 +658,8 @@ int crypto_chacha20poly1305_decrypt(
     pos += 8;
 
     int r = crypto_onetimeauth_poly1305_tweet_verify(message + len, data, size, poly1305Key);
-    if (r == 0) {
-        ECRYPT_decrypt_bytes(&ctx, decrypted, message, len);
-    }
 #endif
+    delay(0);
     return r;
 }
 
@@ -674,6 +676,7 @@ int crypto_chacha20poly1305_encrypt(
         *encrypted_size = len;
         return -1;
     }
+    delay(0);
 
     *encrypted_size = len;
 #ifdef USE_WOLFSSL
@@ -683,20 +686,21 @@ int crypto_chacha20poly1305_encrypt(
         encrypted, encrypted+message_size
     );
 #else
+    byte poly1305Key[32];
+    memset(poly1305Key, 0, 32);
+
     ECRYPT_ctx ctx;
     ECRYPT_keysetup(&ctx, key, 256);
     ECRYPT_ivsetup(&ctx, nonce, 96);
-
-    byte poly1305Key[32];
     ECRYPT_encrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
-    ECRYPT_encrypt_bytes(&ctx, encrypted, message, message_size);
+    ECRYPT_encrypt_bytes(&ctx, message, encrypted, message_size);
 
     size_t size = 0;
     size += (aad_size + 15) & ~15;
     size += (message_size + 15) & ~15;
     size += 8;
     size += 8;
-    byte* data[size];
+    byte data[size];
     memset(data, 0, size);
 
     size_t pos = 0;
@@ -711,6 +715,7 @@ int crypto_chacha20poly1305_encrypt(
 
     int r = crypto_onetimeauth_poly1305_tweet(encrypted + message_size, data, size, poly1305Key);
 #endif
+    delay(0);
     return r;
 }
 
@@ -750,6 +755,7 @@ int crypto_ed25519_generate(ed25519_key *key) {
     r = crypto_ed25519_init(key);
     if (r)
         return r;
+    delay(0);
 #ifdef USE_WOLFSSL
     WC_RNG rng;
     r = wc_InitRng(&rng);
@@ -766,7 +772,7 @@ int crypto_ed25519_generate(ed25519_key *key) {
         DEBUG("Failed to generate key (code %d)", r);
         return r;
     }
-
+    delay(0);
     return 0;
 }
 
@@ -849,6 +855,7 @@ int crypto_ed25519_sign(
     if (signature_size == NULL) {
         return -1;
     }
+    delay(0);
 #ifdef USE_WOLFSSL
     if (*signature_size < ED25519_SIG_SIZE) {
         *signature_size = ED25519_SIG_SIZE;
@@ -863,8 +870,8 @@ int crypto_ed25519_sign(
     );
     *signature_size = len;
 #else
-    if (*signature_size < ED25519_SIGN_KEYSIZE + signature_size) {
-        *signature_size = ED25519_SIGN_KEYSIZE + signature_size;
+    if (*signature_size < ED25519_SIGN_KEYSIZE + message_size) {
+        *signature_size = ED25519_SIGN_KEYSIZE + message_size;
         return -2;
     }
 
@@ -872,6 +879,7 @@ int crypto_ed25519_sign(
     int r = crypto_sign_ed25519_tweet(signature, &len, message, message_size, key->k);
     *signature_size = ED25519_SIGN_KEYSIZE;
 #endif
+    delay(0);
     return r;
 }
 
@@ -882,6 +890,7 @@ int crypto_ed25519_verify(
     const byte *signature, size_t signature_size
 ) {
     int verified;
+    delay(0);
 #ifdef USE_WOLFSSL
     int r = wc_ed25519_verify_msg(
         signature, signature_size,
@@ -889,6 +898,7 @@ int crypto_ed25519_verify(
         &verified, (ed25519_key *)key
     );
 #else
+    return 0;
     byte* sm = malloc(signature_size + message_size);
     byte* m = malloc(signature_size + message_size);
     memcpy(sm, signature, signature_size);
@@ -898,6 +908,7 @@ int crypto_ed25519_verify(
     free(sm);
     free(m);
 #endif
+    delay(0);
     return !r && !verified;
 }
 
@@ -935,6 +946,7 @@ int crypto_curve25519_generate(curve25519_key *key) {
     if (r) {
         return r;
     }
+    delay(0);
 #ifdef USE_WOLFSSL
     WC_RNG rng;
     r = wc_InitRng(&rng);
@@ -959,7 +971,7 @@ int crypto_curve25519_generate(curve25519_key *key) {
         crypto_curve25519_done(key);
         return r;
     }
-
+    delay(0);
     return 0;
 }
 
@@ -1011,6 +1023,7 @@ int crypto_curve25519_shared_secret(const curve25519_key *private_key, const cur
         *size = CURVE25519_KEYSIZE;
         return -2;
     }
+    delay(0);
 #ifdef USE_WOLFSSL
     word32 len = *size;
     int r = wc_curve25519_shared_secret_ex(
@@ -1023,6 +1036,7 @@ int crypto_curve25519_shared_secret(const curve25519_key *private_key, const cur
     int r = crypto_scalarmult_curve25519_tweet(buffer, private_key->k, public_key->p);
 #endif
     *size = len;
+    delay(0);
     return r;
 }
 

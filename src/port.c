@@ -3,6 +3,7 @@
 #ifdef ESP_NONOS
 
 #include <stdio.h>
+#include <stdlib.h>
 #define __cplusplus
 #include <os_type.h>
 #undef __cplusplus
@@ -25,24 +26,25 @@ void homekit_system_restart() {
 void homekit_overclock_start() {
     CLEAR_PERI_REG_MASK(0x60000900, BIT0);
     SET_PERI_REG_MASK(0x3FF00014, BIT0);
+    system_soft_wdt_feed();
     system_soft_wdt_stop();
-    ets_intr_unlock();
 }
 
 void homekit_overclock_end() {
     SET_PERI_REG_MASK(0x60000900, BIT0);
     CLEAR_PERI_REG_MASK(0x3FF00014, BIT0);
+    system_soft_wdt_feed();
     system_soft_wdt_restart();
-    ets_intr_lock();
 }
 
 static struct mdns_info info;
 
 void homekit_mdns_init() {
-    
 }
 
 void homekit_mdns_configure_init(const char *instance_name, int port) {
+    espconn_mdns_close();
+
     struct ip_info ip_info = {};
     wifi_get_ip_info(STATION_IF, &ip_info);
 
@@ -50,6 +52,10 @@ void homekit_mdns_configure_init(const char *instance_name, int port) {
     info.server_name = (char*)"hap";
     info.server_port = port;
     info.ipAddr = ip_info.ip.addr;
+    for (int i = 0; i < 10; ++i) {
+        free(info.txt_data[i]);
+        info.txt_data[i] = NULL;
+    }
 }
 
 void homekit_mdns_add_txt(const char *key, const char *format, ...) {
