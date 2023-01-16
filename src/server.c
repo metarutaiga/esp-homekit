@@ -4294,12 +4294,12 @@ void homekit_setup_mdns(homekit_server_t *server) {
             snprintf(data, data_size, "%s%s", server->config->setupId, server->accessory_id);
             data[data_size-1] = 0;
 
-            unsigned char shaHash[SHA512_DIGEST_SIZE];
 #ifdef USE_WOLFSSL
+            unsigned char shaHash[SHA512_DIGEST_SIZE];
             wc_Sha512Hash((const unsigned char *)data, data_size-1, shaHash);
 #else
-            size_t len = data_size-1;
-            sha512_vector(1, &data, &len, shaHash);
+            unsigned char shaHash[crypto_hash_sha512_BYTES];
+            crypto_hash_sha512(shaHash, (const unsigned char *)data, data_size-1);
 #endif
             free(data);
 #if defined(ESP_NONOS)

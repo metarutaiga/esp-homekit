@@ -9,8 +9,7 @@
 #include <wolfssl/wolfcrypt/ed25519.h>
 #include <wolfssl/wolfcrypt/curve25519.h>
 #else
-#define SHA512_DIGEST_SIZE 64
-int sha512_vector(size_t num_elem, const uint8_t *addr[], const size_t *len, uint8_t *mac);
+#include <libsodium/src/libsodium/include/sodium/crypto_hash_sha512.h>
 #define CURVE25519_KEYSIZE 32
 typedef struct curve25519_key {
     uint8_t p[CURVE25519_KEYSIZE];

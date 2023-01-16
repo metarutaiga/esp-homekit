@@ -17,26 +17,27 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 #include <stdio.h>
 #include <errno.h>
-#include <crypto/sha512.h>
-#include <crypto/sha512_i.h>
 #include <crypto/tls/bignum.h>
-#include <crypto/tweetnacl/tweetnacl.h>
-#define CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE 16
-#define SHA512_DIGEST_SIZE 64
+#include <libsodium/src/libsodium/include/sodium/crypto_hash_sha512.h>
+#include <libsodium/src/libsodium/include/sodium/crypto_kdf_hkdf_sha512.h>
+#include <libsodium/src/libsodium/include/sodium/crypto_aead_chacha20poly1305.h>
+#include <libsodium/src/libsodium/include/sodium/crypto_sign_ed25519.h>
+#include <libsodium/src/libsodium/include/sodium/crypto_scalarmult_curve25519.h>
+#define CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE crypto_aead_chacha20poly1305_ietf_ABYTES
 #define SRP_MODULUS_MIN_BITS 512
 #define SRP_PRIVATE_KEY_MIN_BITS 256
 typedef struct _Srp {
-    struct sha512_state client_proof;
-    struct sha512_state server_proof;
-    struct bignum      *N;
-    struct bignum      *g;
-    struct bignum      *auth;
-    struct bignum      *priv;
-    uint8_t             k[SHA512_DIGEST_SIZE];
-    uint8_t            *key;
-    uint32_t            keySz;
-    uint8_t            *salt;
-    uint32_t            saltSz;
+    struct crypto_hash_sha512_state client_proof;
+    struct crypto_hash_sha512_state server_proof;
+    struct bignum                  *N;
+    struct bignum                  *g;
+    struct bignum                  *auth;
+    struct bignum                  *priv;
+    uint8_t                         k[crypto_hash_sha512_BYTES];
+    uint8_t                        *key;
+    uint32_t                        keySz;
+    uint8_t                        *salt;
+    uint32_t                        saltSz;
 } Srp;
 #include "crypto.h"
 #endif
@@ -101,18 +102,18 @@ int wc_SrpSetKeyH(Srp *srp, byte *secret, word32 size) {
     if (!r) r = wc_Sha512Final(&hash.data.sha512, srp->key);
 #else
 int crypto_srp_key(Srp *srp, u8 *secret, u32 size) {
-    struct sha512_state hash;
+    struct crypto_hash_sha512_state hash;
     int r = 0;
 
-    srp->key = malloc(SHA512_DIGEST_SIZE);
+    srp->key = malloc(crypto_hash_sha512_BYTES);
     if (!srp->key)
         return ENOMEM;
 
-    srp->keySz = SHA512_DIGEST_SIZE;
+    srp->keySz = crypto_hash_sha512_BYTES;
 
-    sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, secret, size);
-    if (!r) r = sha512_done(&hash, srp->key);
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, secret, size);
+    if (!r) r = crypto_hash_sha512_final(&hash, srp->key);
 #endif
     // clean up hash data from stack for security
     memset(&hash, 0, sizeof(hash));
@@ -133,8 +134,8 @@ Srp *crypto_srp_new() {
     }
     srp->keyGenFunc_cb = wc_SrpSetKeyH;
 #else
-    sha512_init(&srp->client_proof);
-    sha512_init(&srp->server_proof);
+    crypto_hash_sha512_init(&srp->client_proof);
+    crypto_hash_sha512_init(&srp->server_proof);
     srp->N = bignum_init();
     srp->g = bignum_init();
     srp->auth = bignum_init();
@@ -222,9 +223,9 @@ int crypto_srp_init(Srp *srp, const char *username, const char *password) {
 
     free(verifier);
 #else
-    struct sha512_state hash;
-    byte digest1[SHA512_DIGEST_SIZE];
-    byte digest2[SHA512_DIGEST_SIZE];
+    struct crypto_hash_sha512_state hash;
+    byte digest1[crypto_hash_sha512_BYTES];
+    byte digest2[crypto_hash_sha512_BYTES];
     byte pad = 0;
     int i = 0;
     int j = 0;
@@ -257,59 +258,59 @@ int crypto_srp_init(Srp *srp, const char *username, const char *password) {
     DEBUG("Setting SRP username");
 
     /* Set k = H(N, g) */
-                sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, N, sizeof(N));
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, N, sizeof(N));
     for (i = 0; i < sizeof(N) - sizeof(g); i++) {
-        if (!r) r = sha512_process(&hash, &pad, 1);
+        if (!r) r = crypto_hash_sha512_update(&hash, &pad, 1);
     }
-    if (!r) r = sha512_process(&hash, g, sizeof(g));
-    if (!r) r = sha512_done(&hash, srp->k);
+    if (!r) r = crypto_hash_sha512_update(&hash, g, sizeof(g));
+    if (!r) r = crypto_hash_sha512_final(&hash, srp->k);
 
     /* update client proof */
 
     /* digest1 = H(N) */
-                sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, N, sizeof(N));
-    if (!r) r = sha512_done(&hash, digest1);
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, N, sizeof(N));
+    if (!r) r = crypto_hash_sha512_final(&hash, digest1);
 
     /* digest2 = H(g) */
-                sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, g, sizeof(g));
-    if (!r) r = sha512_done(&hash, digest2);
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, g, sizeof(g));
+    if (!r) r = crypto_hash_sha512_final(&hash, digest2);
 
     /* digest1 = H(N) ^ H(g) */
     if (r == 0) {
-        for (i = 0, j = SHA512_DIGEST_SIZE; i < j; i++)
+        for (i = 0, j = crypto_hash_sha512_BYTES; i < j; i++)
             digest1[i] ^= digest2[i];
     }
 
     /* digest2 = H(user) */
-                sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, username, strlen(username));
-    if (!r) r = sha512_done(&hash, digest2);
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, username, strlen(username));
+    if (!r) r = crypto_hash_sha512_final(&hash, digest2);
 
     /* client proof = H( H(N) ^ H(g) | H(user) | salt) */
-    if (!r) r = sha512_process(&srp->client_proof, digest1, j);
-    if (!r) r = sha512_process(&srp->client_proof, digest2, j);
-    if (!r) r = sha512_process(&srp->client_proof, salt, sizeof(salt));
+    if (!r) r = crypto_hash_sha512_update(&srp->client_proof, digest1, j);
+    if (!r) r = crypto_hash_sha512_update(&srp->client_proof, digest2, j);
+    if (!r) r = crypto_hash_sha512_update(&srp->client_proof, salt, sizeof(salt));
 
     DEBUG("Setting SRP password");
 
     /* digest = H(username | ':' | password) */
-                sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, username, strlen(username));
-    if (!r) r = sha512_process(&hash, ":", 1);
-    if (!r) r = sha512_process(&hash, password, strlen(password));
-    if (!r) r = sha512_done(&hash, digest1);
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, username, strlen(username));
+    if (!r) r = crypto_hash_sha512_update(&hash, ":", 1);
+    if (!r) r = crypto_hash_sha512_update(&hash, password, strlen(password));
+    if (!r) r = crypto_hash_sha512_final(&hash, digest1);
 
     /* digest = H(salt | H(username | ':' | password)) */
-                sha512_init(&hash);
-    if (!r) r = sha512_process(&hash, srp->salt, srp->saltSz);
-    if (!r) r = sha512_process(&hash, digest1, SHA512_DIGEST_SIZE);
-    if (!r) r = sha512_done(&hash, digest1);
+            r = crypto_hash_sha512_init(&hash);
+    if (!r) r = crypto_hash_sha512_update(&hash, srp->salt, srp->saltSz);
+    if (!r) r = crypto_hash_sha512_update(&hash, digest1, crypto_hash_sha512_BYTES);
+    if (!r) r = crypto_hash_sha512_final(&hash, digest1);
 
     /* Set x (private key) */
-    if (!r) r = bignum_set_unsigned_bin(srp->auth, digest1, SHA512_DIGEST_SIZE);
+    if (!r) r = bignum_set_unsigned_bin(srp->auth, digest1, crypto_hash_sha512_BYTES);
 
     DEBUG("Getting SRP verifier");
     size_t verifierLen = 1024;
@@ -386,7 +387,7 @@ int crypto_srp_get_public_key(Srp *srp, byte *buffer, size_t *buffer_size) {
     /* server side: B = (k * v + (g ^ b % N)) % N */
     struct bignum *i = bignum_init();
     struct bignum *j = bignum_init();
-    if (!r) r = bignum_set_unsigned_bin(i, srp->k, SHA512_DIGEST_SIZE);
+    if (!r) r = bignum_set_unsigned_bin(i, srp->k, crypto_hash_sha512_BYTES);
 //  if (!r) r = bignum_get_unsigned_bin_len(i) == 0 ? SRP_BAD_KEY_E : 0;
     if (!r) r = bignum_exptmod(srp->g, srp->priv, srp->N, pubkey);
     if (!r) r = bignum_mulmod(i, srp->auth, srp->N, j);
@@ -435,8 +436,8 @@ int crypto_srp_compute_key(
 
     /* building u (random scrambling parameter) */
 
-    struct sha512_state hash;
-    sha512_init(&hash);
+    struct crypto_hash_sha512_state hash;
+    crypto_hash_sha512_init(&hash);
 
     int i = 0;
     int r = 0;
@@ -444,18 +445,18 @@ int crypto_srp_compute_key(
 
     /* H(A) */
     for (i = 0; !r && i < secretSz - client_public_key_size; i++)
-        r = sha512_process(&hash, &pad, 1);
-    if (!r) r = sha512_process(&hash, client_public_key, client_public_key_size);
+        r = crypto_hash_sha512_update(&hash, &pad, 1);
+    if (!r) r = crypto_hash_sha512_update(&hash, client_public_key, client_public_key_size);
 
     /* H(A | B) */
     for (i = 0; !r && i < secretSz - server_public_key_size; i++)
-        r = sha512_process(&hash, &pad, 1);
-    if (!r) r = sha512_process(&hash, server_public_key, server_public_key_size);
+        r = crypto_hash_sha512_update(&hash, &pad, 1);
+    if (!r) r = crypto_hash_sha512_update(&hash, server_public_key, server_public_key_size);
 
     /* set u */
-    byte digest[SHA512_DIGEST_SIZE];
-    if (!r) r = sha512_done(&hash, digest);
-    if (!r) r = bignum_set_unsigned_bin(u, digest, SHA512_DIGEST_SIZE);
+    byte digest[crypto_hash_sha512_BYTES];
+    if (!r) r = crypto_hash_sha512_final(&hash, digest);
+    if (!r) r = bignum_set_unsigned_bin(u, digest, crypto_hash_sha512_BYTES);
 
     /* building s (secret) */
 
@@ -484,13 +485,13 @@ int crypto_srp_compute_key(
 
     /* updating client proof = H( H(N) ^ H(g) | H(user) | salt | A | B | K) */
 
-    if (!r) r = sha512_process(&srp->client_proof, client_public_key, client_public_key_size);
-    if (!r) r = sha512_process(&srp->client_proof, server_public_key, server_public_key_size);
-    if (!r) r = sha512_process(&srp->client_proof, srp->key, srp->keySz);
+    if (!r) r = crypto_hash_sha512_update(&srp->client_proof, client_public_key, client_public_key_size);
+    if (!r) r = crypto_hash_sha512_update(&srp->client_proof, server_public_key, server_public_key_size);
+    if (!r) r = crypto_hash_sha512_update(&srp->client_proof, srp->key, srp->keySz);
 
     /* updating server proof = H(A) */
 
-    if (!r) r = sha512_process(&srp->server_proof, client_public_key, client_public_key_size);
+    if (!r) r = crypto_hash_sha512_update(&srp->server_proof, client_public_key, client_public_key_size);
 
     free(secret);
     bignum_deinit(u);
@@ -511,12 +512,12 @@ int crypto_srp_verify(Srp *srp, const byte *proof, size_t proof_size) {
 #ifdef USE_WOLFSSL
     int r = wc_SrpVerifyPeersProof(srp, (byte *)proof, proof_size);
 #else
-    byte digest[SHA512_DIGEST_SIZE];
-    int r = sha512_done(&srp->client_proof, digest);
+    byte digest[crypto_hash_sha512_BYTES];
+    int r = crypto_hash_sha512_final(&srp->client_proof, digest);
 
     /* server proof = H( A | client proof | K) */
-    if (!r) r = sha512_process(&srp->server_proof, proof, proof_size);
-    if (!r) r = sha512_process(&srp->server_proof, srp->key, srp->keySz);
+    if (!r) r = crypto_hash_sha512_update(&srp->server_proof, proof, proof_size);
+    if (!r) r = crypto_hash_sha512_update(&srp->server_proof, srp->key, srp->keySz);
     if (!r && memcmp(proof, digest, proof_size) != 0)
         r = EINVAL;
 #endif
@@ -540,13 +541,13 @@ int crypto_srp_get_proof(Srp *srp, byte *proof, size_t *proof_size) {
     word32 proof_len = *proof_size;
     int r = wc_SrpGetProof(srp, proof, &proof_len);
 #else
-    if (*proof_size < SHA512_DIGEST_SIZE) {
-        *proof_size = SHA512_DIGEST_SIZE;
+    if (*proof_size < crypto_hash_sha512_BYTES) {
+        *proof_size = crypto_hash_sha512_BYTES;
         return -2;
     }
 
     size_t proof_len = *proof_size;
-    int r = sha512_done(&srp->server_proof, proof);
+    int r = crypto_hash_sha512_final(&srp->server_proof, proof);
 #endif
     *proof_size = proof_len;
     return r;
@@ -577,9 +578,9 @@ int crypto_hkdf(
         output, *output_size
     );
 #else
-    byte prk[SHA512_DIGEST_SIZE];
-    hmac_sha512_vector(salt, salt_size, 1, &key, &key_size, prk);
-    int r = hmac_sha512_kdf(prk, SHA512_DIGEST_SIZE, NULL, info, info_size, output, 32);
+    byte prk[crypto_hash_sha512_BYTES];
+    int r = crypto_kdf_hkdf_sha512_extract(prk, salt, salt_size, key, key_size);
+    if (!r) r = crypto_kdf_hkdf_sha512_expand(output, 32, info, info_size, prk);
 #endif
 
     return r;
@@ -630,30 +631,11 @@ int crypto_chacha20poly1305_decrypt(
         message+message_size, decrypted
     );
 #else
-    byte poly1305Key[64 + message_size];
-    memset(poly1305Key, 0, 64);
-    memcpy(poly1305Key + 64, message, message_size);
-    crypto_stream_chacha20_tweet_ietf_xor(poly1305Key, poly1305Key, 64 + message_size, nonce, key);
-    memcpy(decrypted, poly1305Key + 64, message_size);
-
-    delay(0);
-    return 0;
-
-    size_t size = 0;
-    size += (aad_size + 15) & ~15;
-    size += (message_size + 15) & ~15;
-    size += 8;
-    size += 8;
-    byte data[size];
-    memset(data, 0, size);
-
-    size_t pos = 0;
-    memcpy(data + pos, aad, aad_size);          pos += (aad_size + 15) & ~15;
-    memcpy(data + pos, message, message_size);  pos += (message_size + 15) & ~15;
-    memcpy(data + pos, &aad_size, 4);           pos += 8;
-    memcpy(data + pos, &message_size, 4);       pos += 8;
-
-    int r = crypto_onetimeauth_poly1305_tweet_verify(message + message_size, data, size, poly1305Key);
+    int r = crypto_aead_chacha20poly1305_ietf_decrypt(
+        decrypted, NULL, NULL,
+        message, message_size,
+        aad, aad_size,
+        nonce, key);
 #endif
     delay(0);
     return r;
@@ -682,27 +664,11 @@ int crypto_chacha20poly1305_encrypt(
         encrypted, encrypted+message_size
     );
 #else
-    byte poly1305Key[64 + message_size];
-    memset(poly1305Key, 0, 64);
-    memcpy(poly1305Key + 64, message, message_size);
-    crypto_stream_chacha20_tweet_ietf_xor(poly1305Key, poly1305Key, 64 + message_size, nonce, key);
-    memcpy(encrypted, poly1305Key + 64, message_size);
-
-    size_t size = 0;
-    size += (aad_size + 15) & ~15;
-    size += (message_size + 15) & ~15;
-    size += 8;
-    size += 8;
-    byte data[size];
-    memset(data, 0, size);
-
-    size_t pos = 0;
-    memcpy(data + pos, aad, aad_size);              pos += (aad_size + 15) & ~15;
-    memcpy(data + pos, encrypted, message_size);    pos += (message_size + 15) & ~15;
-    memcpy(data + pos, &aad_size, 4);               pos += 8;
-    memcpy(data + pos, &message_size, 4);           pos += 8;
-
-    int r = crypto_onetimeauth_poly1305_tweet(encrypted + message_size, data, size, poly1305Key);
+    int r = crypto_aead_chacha20poly1305_ietf_encrypt(
+        encrypted, NULL,
+        message, message_size,
+        aad, aad_size,
+        NULL, nonce, key);
 #endif
     delay(0);
     return r;
@@ -755,7 +721,7 @@ int crypto_ed25519_generate(ed25519_key *key) {
 
     r = wc_ed25519_make_key(&rng, ED25519_KEY_SIZE, key);
 #else
-    r = crypto_sign_ed25519_tweet_keypair(key->p, key->k);
+    r = crypto_sign_ed25519_keypair(key->p, key->k);
 #endif
     if (r) {
         DEBUG("Failed to generate key (code %d)", r);
@@ -867,7 +833,7 @@ int crypto_ed25519_sign(
     }
 
     unsigned long long len = *signature_size;
-    int r = crypto_sign_ed25519_tweet(signature, &len, message, message_size, key->k);
+    int r = crypto_sign_ed25519(signature, &len, message, message_size, key->k);
     *signature_size = ED25519_SIGN_KEYSIZE;
 #endif
     delay(0);
@@ -894,7 +860,7 @@ int crypto_ed25519_verify(
     memcpy(sm, signature, signature_size);
     memcpy(sm + signature_size, message, message_size);
     unsigned long long mlen;
-    int r = crypto_sign_ed25519_tweet_open(m, &mlen, sm, signature_size + message_size, key->p);
+    int r = crypto_sign_ed25519_open(m, &mlen, sm, signature_size + message_size, key->p);
     verified = r ? 0 : 1;
 #endif
     delay(0);
@@ -954,7 +920,7 @@ int crypto_curve25519_generate(curve25519_key *key) {
     key->k[CURVE25519_KEYSIZE - 1] |= 64;
 
     /* compute public key */
-    r = crypto_scalarmult_curve25519_tweet_base(key->p, key->k);
+    r = crypto_scalarmult_curve25519_base(key->p, key->k);
 #endif
     if (r) {
         crypto_curve25519_done(key);
@@ -1022,7 +988,7 @@ int crypto_curve25519_shared_secret(const curve25519_key *private_key, const cur
     );
 #else
     size_t len = *size;
-    int r = crypto_scalarmult_curve25519_tweet(buffer, private_key->k, public_key->p);
+    int r = crypto_scalarmult_curve25519(buffer, private_key->k, public_key->p);
 #endif
     *size = len;
     delay(0);

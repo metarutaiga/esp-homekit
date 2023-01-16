@@ -11,6 +11,10 @@
 #include <user_interface.h>
 #include <espconn.h>
 
+void randombytes_buf(void * const buf, const size_t size) {
+    os_get_random(buf, size);
+}
+
 uint32_t homekit_random() {
     return os_random();
 }
