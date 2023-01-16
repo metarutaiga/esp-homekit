@@ -3724,16 +3724,16 @@ static http_parser_settings homekit_http_parser_settings = {
 
 
 #if defined(ESP_NONOS)
-typedef struct ReadMessage {
-    struct ReadMessage *next;
+typedef struct RecvMessage {
+    struct RecvMessage *next;
     client_context_t *context;
     char *data;
     unsigned short len;
-} ReadMessage;
-static ReadMessage *head;
-static ReadMessage *tail;
+} RecvMessage;
+static RecvMessage *head IRAM_ATTR;
+static RecvMessage *tail IRAM_ATTR;
 static void homekit_client_process_hint(struct espconn *s, char *data, unsigned short len) {
-    ReadMessage *msg = malloc(sizeof(ReadMessage));
+    RecvMessage *msg = malloc(sizeof(RecvMessage));
     msg->next = NULL;
     msg->context = s->reverse;
     msg->data = malloc(len);
@@ -4125,11 +4125,12 @@ static void homekit_run_server_loop(void *arg)
 
     while (head) {
         homekit_client_process(head->context, head->data, head->len);
-        ReadMessage* next = head->next;
+        RecvMessage *next = head->next;
         free(head->data);
         free(head);
-        if (tail == head)
+        if (tail == head) {
             tail = NULL;
+        }
         head = next;
     }
     homekit_server_close_clients(server);

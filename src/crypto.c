@@ -19,7 +19,6 @@ typedef uint64_t u64;
 #include <errno.h>
 #include <crypto/sha512.h>
 #include <crypto/sha512_i.h>
-#include <crypto/chacha/chacha.h>
 #include <crypto/tls/bignum.h>
 #include <crypto/tweetnacl/tweetnacl.h>
 #define CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE 16
@@ -631,14 +630,11 @@ int crypto_chacha20poly1305_decrypt(
         message+message_size, decrypted
     );
 #else
-    byte poly1305Key[32];
-    memset(poly1305Key, 0, 32);
-
-    ECRYPT_ctx ctx = {};
-    ECRYPT_keysetup(&ctx, key, 256);
-    ECRYPT_ivsetup(&ctx, nonce, 96);
-    ECRYPT_decrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
-    ECRYPT_decrypt_bytes(&ctx, message, decrypted, message_size);
+    byte poly1305Key[64 + message_size];
+    memset(poly1305Key, 0, 64);
+    memcpy(poly1305Key + 64, message, message_size);
+    crypto_stream_chacha20_tweet_ietf_xor(poly1305Key, poly1305Key, 64 + message_size, nonce, key);
+    memcpy(decrypted, poly1305Key + 64, message_size);
 
     delay(0);
     return 0;
@@ -686,14 +682,11 @@ int crypto_chacha20poly1305_encrypt(
         encrypted, encrypted+message_size
     );
 #else
-    byte poly1305Key[32];
-    memset(poly1305Key, 0, 32);
-
-    ECRYPT_ctx ctx;
-    ECRYPT_keysetup(&ctx, key, 256);
-    ECRYPT_ivsetup(&ctx, nonce, 96);
-    ECRYPT_encrypt_bytes(&ctx, poly1305Key, poly1305Key, 32);
-    ECRYPT_encrypt_bytes(&ctx, message, encrypted, message_size);
+    byte poly1305Key[64 + message_size];
+    memset(poly1305Key, 0, 64);
+    memcpy(poly1305Key + 64, message, message_size);
+    crypto_stream_chacha20_tweet_ietf_xor(poly1305Key, poly1305Key, 64 + message_size, nonce, key);
+    memcpy(encrypted, poly1305Key + 64, message_size);
 
     size_t size = 0;
     size += (aad_size + 15) & ~15;
@@ -896,15 +889,13 @@ int crypto_ed25519_verify(
         &verified, (ed25519_key *)key
     );
 #else
-    byte* sm = malloc(signature_size + message_size);
-    byte* m = malloc(signature_size + message_size);
+    byte sm[signature_size + message_size];
+    byte m[signature_size + message_size];
     memcpy(sm, signature, signature_size);
     memcpy(sm + signature_size, message, message_size);
     unsigned long long mlen;
     int r = crypto_sign_ed25519_tweet_open(m, &mlen, sm, signature_size + message_size, key->p);
     verified = r ? 0 : 1;
-    free(sm);
-    free(m);
 #endif
     delay(0);
     return !r && !verified;
