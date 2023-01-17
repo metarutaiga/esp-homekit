@@ -578,7 +578,7 @@ int crypto_hkdf(
         output, *output_size
     );
 #else
-    byte prk[crypto_hash_sha512_BYTES];
+    byte prk[crypto_kdf_hkdf_sha512_KEYBYTES];
     int r = crypto_kdf_hkdf_sha512_extract(prk, salt, salt_size, key, key_size);
     if (!r) r = crypto_kdf_hkdf_sha512_expand(output, 32, info, info_size, prk);
 #endif
@@ -620,15 +620,14 @@ int crypto_chacha20poly1305_decrypt(
         *decrypted_size = len;
         return -2;
     }
-    message_size = len;
     delay(0);
 
     *decrypted_size = len;
 #ifdef USE_WOLFSSL
     int r = wc_ChaCha20Poly1305_Decrypt(
         key, nonce, aad, aad_size,
-        message, message_size,
-        message+message_size, decrypted
+        message, len,
+        message+len, decrypted
     );
 #else
     int r = crypto_aead_chacha20poly1305_ietf_decrypt(
